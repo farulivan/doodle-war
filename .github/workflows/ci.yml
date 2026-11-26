@@ -1,0 +1,51 @@
+# Checks every pull request, and main after each merge.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The token can read the code and nothing else.
+permissions:
+  contents: read
+
+# A new push to a pull request makes its older run pointless, so that run is stopped. On main every merge
+# is checked to the end.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Each action is pinned to a commit: a tag can be moved to other code, a commit can't. Dependabot keeps
+      # the pins and their comments up to date.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      # Corepack fetches the pnpm that package.json pins.
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      # Types, lint, the sim's tests (full bot matches on every map included), the room server's
+      # integration tests, and formatting.
+      - run: pnpm check
+      - run: pnpm build
+
+  dependency-review:
+    # Fails a pull request that adds or upgrades a dependency with a known vulnerability of moderate
+    # severity or worse. It compares the lockfile on both sides through GitHub's API, so it needs no checkout.
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: moderate
