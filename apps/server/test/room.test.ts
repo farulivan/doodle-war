@@ -145,4 +145,40 @@ describe('DoodleRoom', () => {
     await dropped;
     await room.leave().catch(() => undefined);
   });
+
+  it('turns away a browser on another site before making a room', async () => {
+    const saved = DoodleRoom.allowedOrigins;
+    DoodleRoom.allowedOrigins = ['https://doodle-war.example'];
+    const create = (origin?: string) =>
+      fetch(`http://localhost:${PORT}/matchmake/create/${ROOM_NAME}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+        body: JSON.stringify({ name: 'Origin' }),
+      });
+    try {
+      expect((await create('https://elsewhere.example')).ok).toBe(false);
+      expect((await create('https://doodle-war.example')).ok).toBe(true);
+      expect((await create()).ok).toBe(true);
+    } finally {
+      DoodleRoom.allowedOrigins = saved;
+    }
+  });
+
+  it('stops making rooms at the cap, and still lets players into open ones', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    const saved = DoodleRoom.maxRooms;
+    DoodleRoom.maxRooms = 1;
+    try {
+      await expect(new Client(endpoint).create(ROOM_NAME, { name: 'Late' })).rejects.toThrow(
+        /Too many rooms/,
+      );
+      const guest = await new Client(endpoint).joinById(host.roomId, { name: 'Guest' });
+      await guest.leave();
+    } finally {
+      DoodleRoom.maxRooms = saved;
+    }
+    await host.leave();
+  });
 });

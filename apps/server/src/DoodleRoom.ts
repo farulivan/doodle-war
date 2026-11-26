@@ -1,4 +1,4 @@
-import { Room, type Client } from '@colyseus/core';
+import { Room, ServerError, type AuthContext, type Client } from '@colyseus/core';
 import {
   MAPS,
   MAX_PER_TEAM,
@@ -63,6 +63,20 @@ function cleanName(name: unknown, fallback: string): string {
   return s || fallback;
 }
 
+/** A comma-separated list of origins, such as `https://a.example,https://b.example`. */
+export function parseOrigins(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Whether a request with this Origin header may use the server. No header means it isn't from a browser. */
+export function originAllowed(origin: string | null): boolean {
+  const allowed = DoodleRoom.allowedOrigins;
+  return allowed.length === 0 || origin === null || allowed.includes(origin);
+}
+
 const isKind = (k: unknown): k is UnitKind => typeof k === 'string' && (UNIT_KINDS as string[]).includes(k);
 const isLevel = (l: unknown): l is BotLevel => l === 'easy' || l === 'normal' || l === 'hard';
 const isTeam = (t: unknown): t is 0 | 1 => t === 0 || t === 1;
@@ -73,6 +87,26 @@ const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFi
  * send intents (walk, aim, fire, draw) and get back authoritative results to animate.
  */
 export class DoodleRoom extends Room {
+  /**
+   * The sites a browser may create or join a room from, from ALLOWED_ORIGINS. Empty allows any, for local
+   * play and the tests.
+   */
+  static allowedOrigins: string[] = parseOrigins(process.env.ALLOWED_ORIGINS);
+  /**
+   * Rooms open at once, from MAX_ROOMS. A match in progress takes about 6 MB, so 60 of them fit in a 512 MB
+   * instance beside the server's own 80 MB.
+   */
+  static maxRooms = Number(process.env.MAX_ROOMS) || 60;
+
+  /**
+   * Runs before `create` or `joinById` makes or reserves anything. A browser always sends Origin with these
+   * requests, so a page on another site is turned away here, even through a request that skips the CORS
+   * preflight. Clients that aren't browsers send no Origin; the message and room caps cover those.
+   */
+  static override async onAuth(_token: string, _options: unknown, context: AuthContext): Promise<boolean> {
+    return originAllowed(context.headers.get('origin'));
+  }
+
   override maxClients = MAX_PER_TEAM * 2;
   /**
    * A client past this is dropped (and may reconnect). Walking sends at most one message per pixel, about
@@ -96,6 +130,11 @@ export class DoodleRoom extends Room {
   private busy = false;
 
   override onCreate(): void {
+    // The message reaches the player as it is. Words such as "full" or "failed" would make the game show
+    // its own message for a wrong code or a lost connection instead (see connect() in online.ts).
+    if (activeCodes.size >= DoodleRoom.maxRooms) {
+      throw new ServerError(503, 'Too many rooms are open right now. Try again in a few minutes.');
+    }
     this.code = makeCode();
     activeCodes.add(this.code);
     this.roomId = this.code;
