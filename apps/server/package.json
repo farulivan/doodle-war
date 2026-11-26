@@ -1,0 +1,26 @@
+{
+  "name": "@doodle/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "bench": "tsx scripts/bench.ts"
+  },
+  "dependencies": {
+    "@colyseus/core": "0.18.30",
+    "@colyseus/schema": "5.0.51",
+    "@colyseus/ws-transport": "0.18.5",
+    "@doodle/sim": "workspace:*"
+  },
+  "devDependencies": {
+    "@colyseus/sdk": "0.18.10",
+    "@types/node": "^26.6.7",
+    "tsx": "^4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.1.2"
+  }
+}
