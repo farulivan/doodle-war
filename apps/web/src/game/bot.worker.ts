@@ -43,6 +43,10 @@ self.onmessage = (e: MessageEvent<PlanRequest>) => {
     pickups: r.pickups,
     nextPickupId: 1,
   } as GameState;
-  const plan = planBotTurn(state, state.units[r.actorId], r.level);
+  // The actor is found by id, so no field of a message is ever used as a property name. Without a match
+  // there's no reply, and BotPlanner's timeout plans on the main thread instead.
+  const actor = state.units.find((u) => u.id === r.actorId);
+  if (!actor) return;
+  const plan = planBotTurn(state, actor, r.level);
   (self as unknown as Worker).postMessage({ id: r.id, plan });
 };
