@@ -1,5 +1,5 @@
 # Build from the repo root: docker build -f apps/server/Dockerfile -t doodle-war-server .
-FROM node:24-slim
+FROM node:25-slim
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
