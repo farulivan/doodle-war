@@ -12,13 +12,12 @@ only bundled assets are two open-source fonts, Patrick Hand and Permanent Marker
 
 ## How this was built
 
-Farul Ivan made this game with [Claude Code](https://claude.com/claude-code), Anthropic's AI coding agent,
-and the history says so: the commits carry a `Co-Authored-By: Claude` line.
+I made this game with [Claude Code](https://claude.com/claude-code), Anthropic's AI coding agent, and the
+history says so: the commits carry a `Co-Authored-By: Claude` line.
 
-- **Farul** decided what to make (a turn-based artillery game with a theme of its own), chose the
-  notebook-doodle idea and the order to build it in (offline first, online rooms after), and set the bar for
-  how finished it should feel.
-- **Claude** wrote the code, the tests and these docs.
+I decided what to make (a turn-based artillery game with a theme of its own), chose the notebook-doodle idea
+and the order to build it in (offline first, online rooms after), and set the bar for how finished it should
+feel. Claude wrote the code, the tests and these docs.
 
 ## Run it
 
