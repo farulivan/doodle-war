@@ -69,12 +69,12 @@ Tips point these out during the first matches, and **How to play** on the title 
 
 ### The doodles
 
-| Doodle       | HP   | Shots                                                                     | Special                                  |
-| ------------ | ---- | ------------------------------------------------------------------------- | ---------------------------------------- |
-| Pencil Tank  | 1000 | Graphite Shell; Twin Lead, one shell short and one long                   | Sharpener: tunnels in, then goes off big |
-| Ink Squid    | 950  | Ink Blot, a wide splash; Splatter, which splits in three at the top       | Ink Storm: a rain of seven drops         |
-| Paper Plane  | 880  | Paper Dart, a glider the wind pushes hard; Crumple Ball, which barely feels it | Squadron: three darts in formation  |
-| Stapler Mech | 1150 | Staple, fast and flat; Rubber Band, which bounces twice                   | Staple Storm: five staples in a burst    |
+| Doodle       | HP   | Shots                                                                          | Special                                  |
+| ------------ | ---- | ------------------------------------------------------------------------------ | ---------------------------------------- |
+| Pencil Tank  | 1000 | Graphite Shell; Twin Lead, one shell short and one long                        | Sharpener: tunnels in, then goes off big |
+| Ink Squid    | 950  | Ink Blot, a wide splash; Splatter, which splits in three at the top            | Ink Storm: a rain of seven drops         |
+| Paper Plane  | 880  | Paper Dart, a glider the wind pushes hard; Crumple Ball, which barely feels it | Squadron: three darts in formation       |
+| Stapler Mech | 1150 | Staple, fast and flat; Rubber Band, which bounces twice                        | Staple Storm: five staples in a burst    |
 
 The Ink Squid's ink is sticky: whoever it hits walks half as far on their next turn.
 
@@ -90,8 +90,8 @@ seat.
 
 The server runs the match. Clients send what the player does (walk, aim, fire, draw, hop, skip), and the
 server runs the rules and sends back what happened. Walking is the one exception: it's predicted on the
-client so your own doodle moves without waiting for the network, and the server's answer always matches
-because walking uses whole pixels only.
+client so your own doodle moves without waiting for the network. Walking works in whole pixels, so the
+server arrives at the same spot.
 
 ## Putting it online
 
@@ -196,9 +196,9 @@ apps/server     The room server: a Colyseus room that runs the same rules for on
 
 `pnpm test` runs 37 tests:
 
-- **`packages/sim/test/sim.test.ts`:** terrain operations, every map, the turn flow, the protocol's
-  encoding, pickups, the hop, and the bots: that they hit a target in range and walk over to a Band-Aid
-  when hurt.
+- **`packages/sim/test/sim.test.ts`:** terrain operations, every map, the turn flow (the same seed replays
+  the same match, delay decides who's next, craters, falls, Draw), the protocol's encoding, pickups, the
+  hop, and the bots: that one plans quickly on a real map, and that a hurt one walks over to a Band-Aid.
 - **`packages/sim/test/fullmatch.test.ts`:** a whole bot-against-bot match on each of the five maps, which
   has to end with a winner.
 - **`apps/server/test/room.test.ts`:** a real server on a local port. Two clients make a room, start a 1v1,
@@ -215,6 +215,8 @@ apps/server     The room server: a Colyseus room that runs the same rules for on
 - **Dependency review** fails if the pull request adds or upgrades a package with a known vulnerability of
   moderate severity or worse.
 
+`main` takes a pull request only once both checks pass.
+
 **Dependencies** are kept current by Dependabot (`.github/dependabot.yml`), for the packages, the GitHub
 Actions and the server's Docker image. A fix for a known vulnerability arrives as a pull request as soon as
 the advisory is out. Routine updates come once a month, and only once a release is a week old: a hijacked
@@ -230,6 +232,21 @@ keeps power, walking and the angle within what the rules allow, fires a special 
 and runs every shot itself. Rooms are private, so the 4-letter code is the only way in, and a client that
 sends more than 120 messages a second is dropped. The Docker image runs the server as an unprivileged user.
 It stores nothing: names live in memory for as long as the room does.
+
+**On GitHub**, these are set in the repository's settings, not in any file:
+
+| Setting                         | Value                                                                               |
+| ------------------------------- | ----------------------------------------------------------------------------------- |
+| Merging                         | merge commits only; the branch is deleted once merged                               |
+| Rule on `main`                  | changes only through a pull request whose checks pass; no force-push, no deletion   |
+| Actions                         | GitHub's own actions only, pinned to a commit; a pull request from a fork waits for approval |
+| Dependabot                      | alerts and security updates                                                         |
+| Code scanning                   | CodeQL, default setup                                                               |
+| Secret scanning                 | on, with push protection: a push that contains a key or a token is refused          |
+| Private vulnerability reporting | on, as `SECURITY.md` explains                                                       |
+
+The owner can still merge a pull request past a failing check, for an emergency such as an outage of
+GitHub Actions, but nobody can push to `main` directly.
 
 To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
