@@ -1,0 +1,16 @@
+{
+  "name": "Doodle War",
+  "short_name": "Doodle War",
+  "description": "Turn-based artillery, fought in the margins of your notebook.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#6b4a2f",
+  "theme_color": "#f6f1e3",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
