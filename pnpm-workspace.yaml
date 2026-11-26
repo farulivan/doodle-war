@@ -7,11 +7,12 @@ minimumReleaseAgeExclude:
   - '@vitest/spy@5.1.2'
   - vitest@5.1.2
 
-# No install scripts run. esbuild (under tsx) and msgpackr-extract (under Colyseus) ask to, but both ship
-# prebuilt binaries as optional packages, so neither needs its script.
+# No install scripts run. esbuild (under tsx and wrangler), msgpackr-extract (under Colyseus) and workerd
+# (under wrangler) ask to, but all three ship prebuilt binaries as optional packages, so none needs its script.
 allowBuilds:
   esbuild: false
   msgpackr-extract: false
+  workerd: false
 
 # Refuse a new release of a package that was published with less proof of where it came from than the
 # releases before it: say, from someone's laptop with a stolen token, where earlier ones came from the
