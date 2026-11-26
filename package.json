@@ -1,0 +1,32 @@
+{
+  "name": "doodle-war",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.23.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "onFail": "error"
+    }
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @doodle/web --filter @doodle/server dev",
+    "dev:web": "pnpm --filter @doodle/web dev",
+    "dev:server": "pnpm --filter @doodle/server dev",
+    "build": "pnpm --filter @doodle/web build",
+    "preview": "pnpm --filter @doodle/web preview",
+    "start:server": "pnpm --filter @doodle/server start",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "oxlint",
+    "format": "prettier --write .",
+    "check": "pnpm -r typecheck && oxlint && pnpm -r test && prettier --check ."
+  },
+  "devDependencies": {
+    "oxlint": "^1.95.0",
+    "prettier": "^3.10.1"
+  }
+}
