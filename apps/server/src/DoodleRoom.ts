@@ -74,6 +74,11 @@ const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFi
  */
 export class DoodleRoom extends Room {
   override maxClients = MAX_PER_TEAM * 2;
+  /**
+   * A client past this is dropped (and may reconnect). Walking sends at most one message per pixel, about
+   * 55 a second, and aiming about 10, so honest play stays well under it.
+   */
+  override maxMessagesPerSecond = 120;
 
   private code = '';
   private phase: LobbySnapshot['phase'] = 'lobby';
@@ -95,20 +100,36 @@ export class DoodleRoom extends Room {
     activeCodes.add(this.code);
     this.roomId = this.code;
     this.autoDispose = true;
+    // The code is the only way in. A public room could be entered with join('doodle') by anyone who
+    // doesn't know it.
+    void this.setPrivate(true);
 
-    this.onMessage('profile', (c, m: ClientMessages['profile']) => this.onProfile(c, m));
-    this.onMessage('ready', (c, m: ClientMessages['ready']) => this.onReady(c, m));
-    this.onMessage('settings', (c, m: ClientMessages['settings']) => this.onSettings(c, m));
-    this.onMessage('addBot', (c, m: ClientMessages['addBot']) => this.onAddBot(c, m));
-    this.onMessage('updateBot', (c, m: ClientMessages['updateBot']) => this.onUpdateBot(c, m));
-    this.onMessage('removeBot', (c, m: ClientMessages['removeBot']) => this.onRemoveBot(c, m));
-    this.onMessage('start', (c) => this.onStart(c));
-    this.onMessage('move', (c, m: ClientMessages['move']) => this.onMove(c, m));
-    this.onMessage('hop', (c) => this.onHop(c));
-    this.onMessage('aim', (c, m: ClientMessages['aim']) => this.onAim(c, m));
-    this.onMessage('fire', (c, m: ClientMessages['fire']) => this.onFire(c, m));
-    this.onMessage('draw', (c, m: ClientMessages['draw']) => this.onDraw(c, m));
-    this.onMessage('backToLobby', () => this.onBackToLobby());
+    this.on('profile', (c, m) => this.onProfile(c, m));
+    this.on('ready', (c, m) => this.onReady(c, m));
+    this.on('settings', (c, m) => this.onSettings(c, m));
+    this.on('addBot', (c, m) => this.onAddBot(c, m));
+    this.on('updateBot', (c, m) => this.onUpdateBot(c, m));
+    this.on('removeBot', (c, m) => this.onRemoveBot(c, m));
+    this.on('start', (c) => this.onStart(c));
+    this.on('move', (c, m) => this.onMove(c, m));
+    this.on('hop', (c) => this.onHop(c));
+    this.on('aim', (c, m) => this.onAim(c, m));
+    this.on('fire', (c, m) => this.onFire(c, m));
+    this.on('draw', (c, m) => this.onDraw(c, m));
+    this.on('backToLobby', () => this.onBackToLobby());
+  }
+
+  /**
+   * Every client message is an object, even an empty one. Anything else (null, a number) is dropped here,
+   * so the handlers can read fields without checking for it.
+   */
+  private on<K extends keyof ClientMessages>(
+    type: K,
+    handler: (client: Client, m: ClientMessages[K]) => void,
+  ): void {
+    this.onMessage(type, (client: Client, m: unknown) => {
+      if (typeof m === 'object' && m !== null) handler(client, m as ClientMessages[K]);
+    });
   }
 
   override onJoin(client: Client, options: { name?: string } = {}): void {

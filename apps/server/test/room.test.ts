@@ -125,4 +125,24 @@ describe('DoodleRoom', () => {
     expect(shot.result.actorId).toBe(botId);
     await host.leave();
   }, 40000);
+
+  it('lets no one into a room without its code', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    await expect(new Client(endpoint).join(ROOM_NAME, { name: 'Stranger' })).rejects.toThrow();
+    await host.leave();
+  });
+
+  it('drops a client that floods the room with messages', async () => {
+    const room = await new Client(`ws://localhost:${PORT}`).create(ROOM_NAME, { name: 'Flood' });
+    await next<LobbySnapshot>(room, 'lobby');
+    const dropped = new Promise<void>((resolve) => {
+      room.onDrop(() => resolve());
+      room.onLeave(() => resolve());
+    });
+    for (let i = 0; i < 300; i++) room.send('ready', { ready: i % 2 === 0 });
+    await dropped;
+    await room.leave().catch(() => undefined);
+  });
 });
