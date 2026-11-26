@@ -194,7 +194,7 @@ apps/server     The room server: a Colyseus room that runs the same rules for on
 
 ## Tests
 
-`pnpm test` runs 35 tests:
+`pnpm test` runs 37 tests:
 
 - **`packages/sim/test/sim.test.ts`:** terrain operations, every map, the turn flow, the protocol's
   encoding, pickups, the hop, and the bots: that they hit a target in range and walk over to a Band-Aid
@@ -202,8 +202,9 @@ apps/server     The room server: a Colyseus room that runs the same rules for on
 - **`packages/sim/test/fullmatch.test.ts`:** a whole bot-against-bot match on each of the five maps, which
   has to end with a winner.
 - **`apps/server/test/room.test.ts`:** a real server on a local port. Two clients make a room, start a 1v1,
-  check that the terrain they receive is identical, walk and fire. A second test fills a team with a bot
-  and checks that it plays its own turn.
+  check that the terrain they receive is identical, walk and fire. Others fill a team with a bot and check
+  that it plays its own turn, that no one gets into a room without its code, and that a client flooding
+  the room with messages is dropped.
 
 ## Checks and security
 
@@ -226,8 +227,9 @@ shipped.
 
 **The room server** trusts nothing a client sends. It acts only for the player whose unit's turn it is,
 keeps power, walking and the angle within what the rules allow, fires a special only once it's charged,
-and runs every shot itself. It stores nothing:
-names live in memory for as long as the room does.
+and runs every shot itself. Rooms are private, so the 4-letter code is the only way in, and a client that
+sends more than 120 messages a second is dropped. The Docker image runs the server as an unprivileged user.
+It stores nothing: names live in memory for as long as the room does.
 
 To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
