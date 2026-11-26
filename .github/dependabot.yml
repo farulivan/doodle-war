@@ -39,7 +39,9 @@ updates:
       prefix: ci
       include: scope
 
-  # The room server's Docker base image.
+  # The room server's Docker base image. It names an exact Node release, so this offers its patches and minor
+  # updates. A new major is left to a person: it should be an LTS release (an even number), and .nvmrc, CI
+  # and the image move to it together.
   - package-ecosystem: docker
     directory: /apps/server
     schedule:
@@ -48,6 +50,9 @@ updates:
       timezone: Asia/Jakarta
     cooldown:
       default-days: 7
+    ignore:
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
     commit-message:
       prefix: build
       include: scope
