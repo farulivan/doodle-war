@@ -1,4 +1,4 @@
-import { Server } from '@colyseus/core';
+import { Server, matchMaker } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { Client, type Room } from '@colyseus/sdk';
 import {
@@ -14,11 +14,13 @@ import {
 } from '@doodle/sim';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DoodleRoom } from '../src/DoodleRoom';
+import { installLimits, limits } from '../src/limits';
 
 const PORT = 25670 + Math.floor(Math.random() * 100);
 let server: Server;
 
 beforeAll(async () => {
+  installLimits();
   server = new Server({ transport: new WebSocketTransport(), greet: false });
   server.define(ROOM_NAME, DoodleRoom);
   await server.listen(PORT);
@@ -29,6 +31,19 @@ afterAll(async () => {
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A matchmaker request as a browser on the address would make it, behind Railway's edge. */
+function matchmake(method: string, target: string, address?: string): Promise<Response> {
+  return fetch(`http://localhost:${PORT}/matchmake/${method}/${target}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(address ? { 'x-real-ip': address } : {}) },
+    body: JSON.stringify({ name: 'Limits' }),
+  });
+}
+
+async function errorOf(response: Promise<Response>): Promise<string> {
+  return ((await (await response).json()) as { error?: string }).error ?? '';
+}
 
 /** Resolves with the next message of a type that passes the filter. */
 function next<T>(
@@ -225,5 +240,42 @@ describe('DoodleRoom', () => {
     } finally {
       DoodleRoom.idleMs = saved;
     }
+  });
+
+  it('limits how often one address may ask the matchmaker', async () => {
+    const saved = limits.requests;
+    limits.requests = 3;
+    try {
+      for (let i = 0; i < 3; i++) {
+        expect(await errorOf(matchmake('joinById', 'ZZZZ', '203.0.113.1'))).not.toMatch(/Too many tries/);
+      }
+      expect(await errorOf(matchmake('joinById', 'ZZZZ', '203.0.113.1'))).toMatch(/Too many tries/);
+      expect(await errorOf(matchmake('joinById', 'ZZZZ', '203.0.113.2'))).not.toMatch(/Too many tries/);
+      // Without Railway's header, as on a laptop, nothing is counted.
+      for (let i = 0; i < 5; i++) {
+        expect(await errorOf(matchmake('joinById', 'ZZZZ'))).not.toMatch(/Too many tries/);
+      }
+    } finally {
+      limits.requests = saved;
+    }
+  });
+
+  it('lets one address keep only 2 rooms open, counting an IPv6 /64 as one address', async () => {
+    const create = async (address: string) =>
+      (await (await matchmake('create', ROOM_NAME, address)).json()) as { roomId?: string; error?: string };
+    const first = await create('2001:db8:1:2::1');
+    const second = await create('2001:db8:1:2:aaaa::9');
+    expect(first.roomId).toBeDefined();
+    expect(second.roomId).toBeDefined();
+    expect((await create('2001:db8:1:2::77')).error).toMatch(/2 rooms open/);
+    const other = await create('198.51.100.7');
+    expect(other.roomId).toBeDefined();
+
+    // Once one of its rooms closes, the address may open another.
+    await matchMaker.getLocalRoomById(first.roomId!)?.disconnect();
+    const again = await create('2001:db8:1:2::1');
+    expect(again.roomId).toBeDefined();
+
+    for (const r of [second, other, again]) await matchMaker.getLocalRoomById(r.roomId!)?.disconnect();
   });
 });

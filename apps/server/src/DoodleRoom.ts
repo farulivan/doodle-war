@@ -34,6 +34,7 @@ import {
   type Unit,
   type UnitKind,
 } from '@doodle/sim';
+import { roomClosed } from './limits';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const activeCodes = new Set<string>();
@@ -270,6 +271,7 @@ export class DoodleRoom extends Room {
 
   override onDispose(): void {
     activeCodes.delete(this.code);
+    roomClosed(this.roomId);
     this.turnTimer?.clear();
     this.lobbyTimer?.clear();
   }

@@ -212,6 +212,21 @@ The room server runs on Railway from `apps/server/Dockerfile`. Its settings live
   the server.
 - **One replica:** rooms live in memory, so a second instance wouldn't know the first one's codes.
 - **A hard usage limit** on Railway's Usage page caps the bill, whatever happens to the server.
+- **Check `X-Real-IP` after the first deploy,** before sharing the game. The limits per address trust it,
+  and Railway doesn't say whether it replaces one the client sends. Three rooms from one machine, each
+  claiming another address:
+
+  ```sh
+  for ip in 203.0.113.1 203.0.113.2 203.0.113.3; do
+    curl -s -X POST https://doodle-war-rooms.farulivan.com/matchmake/create/doodle \
+      -H 'content-type: application/json' -H "X-Real-IP: $ip" -d '{}'; echo
+  done
+  ```
+
+  The third should answer "You already have 2 rooms open". If all three make a room, Railway passes the
+  client's header on, and the limits per address do nothing until the server sits behind Cloudflare's
+  proxy instead. Then open two lobbies in laptop tabs, and make a room from a phone on mobile data. If the
+  phone is told 2 rooms are open, every player looks like one address, and the limits have to come off.
 
 ## How the code is organised
 
@@ -312,8 +327,12 @@ as the room does.
 The origin check only stops browsers. A script can send any `Origin` it likes, so the server treats every
 client as a possible script and limits what one can use up instead. Each lobby change goes to every
 player, so the lobby is sent at most 10 times a second however fast it changes, and a room nobody has
-played in for 10 minutes closes. None of these limits is per IP address: one machine could still keep all
-10 rooms busy. Limiting by IP belongs in front of the server, at Cloudflare, and waits until it's needed.
+played in for 10 minutes closes. Each address may ask the matchmaker (create, join by code, reconnect) at
+most 10 times in 10 seconds, which makes guessing a room code take about a day, and keep at most 2 rooms
+open, so one machine can't hold all 10. An IPv6 address counts by its /64, since one machine usually has
+all of it. The address is the `X-Real-IP` header Railway's edge adds, checked on the live server (see "On
+Railway"). A request without it, as on a laptop, isn't limited this way. Players behind one shared
+address, such as a school network or a phone carrier, share these limits.
 
 **On GitHub**, these are set in the repository's settings, not in any file:
 
