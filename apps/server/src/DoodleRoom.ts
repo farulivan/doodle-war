@@ -93,10 +93,10 @@ export class DoodleRoom extends Room {
    */
   static allowedOrigins: string[] = parseOrigins(process.env.ALLOWED_ORIGINS);
   /**
-   * Rooms open at once, from MAX_ROOMS. A match in progress takes about 6 MB, so 60 of them fit in a 512 MB
-   * instance beside the server's own 80 MB.
+   * Rooms open at once, from MAX_ROOMS. Kept low so the hosting bill stays low: a match in progress takes
+   * about 6 MB, so 10 of them add about 60 MB to the server's own 80 MB.
    */
-  static maxRooms = Number(process.env.MAX_ROOMS) || 60;
+  static maxRooms = Number(process.env.MAX_ROOMS) || 10;
 
   /**
    * Runs before `create` or `joinById` makes or reserves anything. A browser always sends Origin with these

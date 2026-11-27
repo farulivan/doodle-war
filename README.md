@@ -172,7 +172,7 @@ Two variables set what it accepts:
 | Variable          | What it does                                                                               |
 | ----------------- | ------------------------------------------------------------------------------------------ |
 | `ALLOWED_ORIGINS` | The sites a browser may use it from, comma-separated, such as `https://doodle-war.farulivan.com`. A browser on any other site is refused before a room is made. Unset, any site may: fine on a laptop, not online. |
-| `MAX_ROOMS`       | Rooms open at once, 60 if unset. Past it, a new room is refused with "Too many rooms are open right now", and the rooms already open still take players. |
+| `MAX_ROOMS`       | Rooms open at once, 10 if unset. Past it, a new room is refused with "Too many rooms are open right now", and the rooms already open still take players. |
 
 Rooms live in memory, so a restart ends the matches in progress. The server keeps nothing on disk, and one
 instance is enough: matches are short and small.
@@ -304,7 +304,7 @@ shipped.
 keeps power, walking and the angle within what the rules allow, fires a special only once it's charged,
 and runs every shot itself. Rooms are private, so the 4-letter code is the only way in, and a client that
 sends more than 120 messages a second is dropped. Online, a browser on any site but the game's own is
-turned away before a room is made, and at most 60 rooms are open at once (see "The room server"). The
+turned away before a room is made, and at most 10 rooms are open at once (see "The room server"). The
 Docker image runs the server as an unprivileged user. It stores nothing: names live in memory for as long
 as the room does.
 
