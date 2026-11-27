@@ -1,0 +1,18 @@
+// How Cloudflare serves the game. Cloudflare builds and deploys every merge to main by itself: it runs
+// `pnpm build`, then `wrangler deploy`, which reads this file. See "On Cloudflare" in the README.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Has to be the Worker's name in the Cloudflare dashboard, or the build is refused.
+  "name": "doodle-war",
+  "compatibility_date": "2026-11-01",
+  // There is no server code: the site is the folder `pnpm build` writes, with the headers in
+  // apps/web/public/_headers. The room server is hosted on its own (see "On Railway").
+  "assets": { "directory": "./apps/web/dist" },
+  // The game's one address. Deploying creates its DNS record and certificate.
+  "routes": [{ "pattern": "doodle-war.farulivan.com", "custom_domain": true }],
+  // No second copy of the game at doodle-war.<account>.workers.dev...
+  "workers_dev": false,
+  // ...but a pull request still gets a link of its own there, to try a change before it is merged.
+  "preview_urls": true,
+  "previews": {},
+}

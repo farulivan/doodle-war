@@ -1,7 +1,9 @@
-import { Room, type Client } from '@colyseus/core';
+import { Room, ServerError, type AuthContext, type Client } from '@colyseus/core';
 import {
+  CLOSE_IDLE,
   MAPS,
   MAX_PER_TEAM,
+  ROOM_IDLE_MINUTES,
   UNIT_KINDS,
   activeUnit,
   beginTurn,
@@ -32,6 +34,7 @@ import {
   type Unit,
   type UnitKind,
 } from '@doodle/sim';
+import { roomClosed } from './limits';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const activeCodes = new Set<string>();
@@ -43,6 +46,12 @@ const SHOT_SETTLE_MS = 1300;
 const RECONNECT_SECONDS = 45;
 /** Walking intents are capped so a client can't teleport. */
 const MAX_MOVE_PER_MESSAGE = 12;
+/**
+ * The lobby goes to every player at most this often, carrying the latest state. Each lobby change sends the
+ * whole lobby to every player, about 260 times the bytes of the click that caused it, so a client clicking
+ * ready as fast as it may would otherwise make the server send gigabytes an hour.
+ */
+const LOBBY_EVERY_MS = 100;
 
 function makeCode(): string {
   for (;;) {
@@ -63,6 +72,20 @@ function cleanName(name: unknown, fallback: string): string {
   return s || fallback;
 }
 
+/** A comma-separated list of origins, such as `https://a.example,https://b.example`. */
+export function parseOrigins(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Whether a request with this Origin header may use the server. No header means it isn't from a browser. */
+export function originAllowed(origin: string | null): boolean {
+  const allowed = DoodleRoom.allowedOrigins;
+  return allowed.length === 0 || origin === null || allowed.includes(origin);
+}
+
 const isKind = (k: unknown): k is UnitKind => typeof k === 'string' && (UNIT_KINDS as string[]).includes(k);
 const isLevel = (l: unknown): l is BotLevel => l === 'easy' || l === 'normal' || l === 'hard';
 const isTeam = (t: unknown): t is 0 | 1 => t === 0 || t === 1;
@@ -73,6 +96,28 @@ const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFi
  * send intents (walk, aim, fire, draw) and get back authoritative results to animate.
  */
 export class DoodleRoom extends Room {
+  /**
+   * The sites a browser may create or join a room from, from ALLOWED_ORIGINS. Empty allows any, for local
+   * play and the tests.
+   */
+  static allowedOrigins: string[] = parseOrigins(process.env.ALLOWED_ORIGINS);
+  /**
+   * Rooms open at once, from MAX_ROOMS. Kept low so the hosting bill stays low: a match in progress takes
+   * about 6 MB, so 10 of them add about 60 MB to the server's own 80 MB.
+   */
+  static maxRooms = Number(process.env.MAX_ROOMS) || 10;
+  /** How long a room stays open with no message from any player. Bots playing on don't count. */
+  static idleMs = ROOM_IDLE_MINUTES * 60_000;
+
+  /**
+   * Runs before `create` or `joinById` makes or reserves anything. A browser always sends Origin with these
+   * requests, so a page on another site is turned away here, even through a request that skips the CORS
+   * preflight. Clients that aren't browsers send no Origin; the message and room caps cover those.
+   */
+  static override async onAuth(_token: string, _options: unknown, context: AuthContext): Promise<boolean> {
+    return originAllowed(context.headers.get('origin'));
+  }
+
   override maxClients = MAX_PER_TEAM * 2;
   /**
    * A client past this is dropped (and may reconnect). Walking sends at most one message per pixel, about
@@ -94,8 +139,16 @@ export class DoodleRoom extends Room {
   private turnSeconds = 0;
   private turnStartedAt = 0;
   private busy = false;
+  private lastActivity = Date.now();
+  private lobbySentAt = 0;
+  private lobbyTimer: { clear(): void } | null = null;
 
   override onCreate(): void {
+    // The message reaches the player as it is. Words such as "full" or "failed" would make the game show
+    // its own message for a wrong code or a lost connection instead (see connect() in online.ts).
+    if (activeCodes.size >= DoodleRoom.maxRooms) {
+      throw new ServerError(503, 'Too many rooms are open right now. Try again in a few minutes.');
+    }
     this.code = makeCode();
     activeCodes.add(this.code);
     this.roomId = this.code;
@@ -103,6 +156,7 @@ export class DoodleRoom extends Room {
     // The code is the only way in. A public room could be entered with join('doodle') by anyone who
     // doesn't know it.
     void this.setPrivate(true);
+    this.closeWhenIdle();
 
     this.on('profile', (c, m) => this.onProfile(c, m));
     this.on('ready', (c, m) => this.onReady(c, m));
@@ -128,11 +182,27 @@ export class DoodleRoom extends Room {
     handler: (client: Client, m: ClientMessages[K]) => void,
   ): void {
     this.onMessage(type, (client: Client, m: unknown) => {
+      this.lastActivity = Date.now();
       if (typeof m === 'object' && m !== null) handler(client, m as ClientMessages[K]);
     });
   }
 
+  /**
+   * Closes the room once no player has sent anything for idleMs: a lobby left open in a tab, or a match with
+   * the turn timer off that everyone walked away from. Otherwise those hold one of the maxRooms slots for as
+   * long as the tab stays open.
+   */
+  private closeWhenIdle(): void {
+    const left = this.lastActivity + DoodleRoom.idleMs - Date.now();
+    if (left > 0) {
+      this.clock.setTimeout(() => this.closeWhenIdle(), left);
+      return;
+    }
+    void this.disconnect(CLOSE_IDLE);
+  }
+
   override onJoin(client: Client, options: { name?: string } = {}): void {
+    this.lastActivity = Date.now();
     const team: 0 | 1 = this.teamCount(0) <= this.teamCount(1) ? 0 : 1;
     if (this.teamCount(team) >= MAX_PER_TEAM) {
       // A bot holds the slot; a human takes priority.
@@ -157,10 +227,13 @@ export class DoodleRoom extends Room {
     const p = this.player(client);
     if (p) p.connected = false;
     this.broadcastLobby();
-    this.allowReconnection(client, RECONNECT_SECONDS);
+    // Rejects when the seat isn't kept: the time ran out, or the room is closing (closeWhenIdle drops every
+    // client). Unhandled, that would shut down the whole server, every other room with it.
+    this.allowReconnection(client, RECONNECT_SECONDS).catch(() => undefined);
   }
 
   override onReconnect(client: Client): void {
+    this.lastActivity = Date.now();
     const p = this.player(client);
     if (p) p.connected = true;
     this.broadcastLobby();
@@ -198,7 +271,9 @@ export class DoodleRoom extends Room {
 
   override onDispose(): void {
     activeCodes.delete(this.code);
+    roomClosed(this.roomId);
     this.turnTimer?.clear();
+    this.lobbyTimer?.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -220,7 +295,19 @@ export class DoodleRoom extends Room {
     return { code: this.code, phase: this.phase, players: this.players, settings: this.settings };
   }
 
+  /** Sends the lobby to everyone, at most every LOBBY_EVERY_MS. Changes in between go out together. */
   private broadcastLobby(): void {
+    if (this.lobbyTimer) return;
+    const wait = this.lobbySentAt + LOBBY_EVERY_MS - Date.now();
+    if (wait > 0) this.lobbyTimer = this.clock.setTimeout(() => this.sendLobby(), wait);
+    else this.sendLobby();
+  }
+
+  /** Sends the lobby now, for a phase change, so it stays in order with the start or over message beside it. */
+  private sendLobby(): void {
+    this.lobbyTimer?.clear();
+    this.lobbyTimer = null;
+    this.lobbySentAt = Date.now();
     this.broadcast('lobby', this.lobbySnapshot());
   }
 
@@ -303,7 +390,7 @@ export class DoodleRoom extends Room {
     this.phase = 'playing';
     this.busy = false;
     void this.lock();
-    this.broadcastLobby();
+    this.sendLobby();
     const start: MatchStart = {
       config,
       owners,
@@ -321,7 +408,7 @@ export class DoodleRoom extends Room {
     this.turnTimer?.clear();
     for (const p of this.players) if (!p.bot) p.ready = false;
     void this.unlock();
-    this.broadcastLobby();
+    this.sendLobby();
   }
 
   // ---------------------------------------------------------------------------
@@ -401,7 +488,7 @@ export class DoodleRoom extends Room {
     this.phase = 'over';
     this.turnTimer?.clear();
     this.broadcast('over', { winner: s.winner ?? -1, turns: s.turn.number, units: s.units });
-    this.broadcastLobby();
+    this.sendLobby();
   }
 
   /** The client may act only for its own unit, on its turn, while nothing is resolving. */

@@ -10,6 +10,10 @@ import type { Rect } from './terrain';
 
 export const ROOM_NAME = 'doodle';
 export const MAX_PER_TEAM = 3;
+/** A room closes once no player has sent anything for this long, so a room left open frees its slot. */
+export const ROOM_IDLE_MINUTES = 10;
+/** The close code a client gets when its room closes for that reason. Colyseus' own codes are 4000 to 4010. */
+export const CLOSE_IDLE = 4100;
 
 export interface LobbyPlayer {
   /** Session id for humans, `bot-<n>` for bots. */

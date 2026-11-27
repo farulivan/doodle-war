@@ -97,6 +97,10 @@ server arrives at the same spot.
 The game and the room server are hosted separately. The game is a static site and works on its own: bots
 and pass-and-play need no server. The room server is only needed for **Play Online**.
 
+The game is at `doodle-war.farulivan.com`, on Cloudflare, and the room server at
+`doodle-war-rooms.farulivan.com`, on Railway. Every merge to `main` goes live on both. Neither host needs a
+secret on GitHub: each reads the repository through its own GitHub app.
+
 ### The game
 
 `pnpm build` writes a static site to `apps/web/dist`, which any static host can serve. Where the host builds
@@ -109,8 +113,49 @@ menu says online play isn't set up for that build.
 
 The build is an installable web app with a service worker: once loaded, it plays offline against bots. Pages
 are fetched network-first, so a new release shows up on the next visit; the hashed files in `assets/` are
-cached for good. The link preview uses `og.jpg`, and some sites only read an absolute address, so set
-`og:image` in `apps/web/index.html` to the full URL once the address is known.
+cached for good. The link preview uses `og.jpg` at its full address, since some sites only read an absolute
+one, so `og:image` in `apps/web/index.html` has to change if the game moves.
+
+### On Cloudflare
+
+The game is a Worker that serves only files, which is free with no limit on visits. `wrangler.jsonc` says
+what the site is (`apps/web/dist`), what the Worker is called and which address it answers on.
+`apps/web/public/_headers` keeps the hashed files in `assets/` for a year, has every other file checked
+again on each visit, and adds `X-Content-Type-Options: nosniff` and a `Referrer-Policy` to every response.
+
+The build is set up once in the Cloudflare dashboard, under the Worker's **Settings → Build**, and these
+values live only there:
+
+| Setting         | Value                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------- |
+| Git branch      | `main`                                                                                 |
+| Build command   | `corepack pnpm install --frozen-lockfile && corepack pnpm build`                       |
+| Deploy command  | `./node_modules/.bin/wrangler deploy`                                                  |
+| Preview command | `./node_modules/.bin/wrangler preview`                                                 |
+| Build variables | `SKIP_DEPENDENCY_INSTALL` = `1`, `VITE_SERVER_URL` = `wss://doodle-war-rooms.farulivan.com` |
+
+They differ from Cloudflare's defaults for two reasons. Its builder comes with an older pnpm than the one
+pinned here and would install with that, so the variable turns its own install off and the build command
+fetches the pinned pnpm through Corepack instead. And its default commands start with `npx`, so these call
+the wrangler that `pnpm-lock.yaml` pins. `VITE_SERVER_URL` isn't a secret: it ends up in the game's code.
+
+With **Enable Preview Builds** ticked, every pull request is built too and gets an address of its own at
+`workers.dev`. Those addresses are public, and they play offline only, because the room server accepts
+only the game's own address.
+
+To serve a build locally the way Cloudflare will, headers included: `pnpm build && pnpm exec wrangler dev`.
+
+**What the domain adds.** Two settings of `farulivan.com` each put a small script on every page it serves,
+this game's included. They are Cloudflare's, not the game's, and nothing in this repo switches them on or
+off:
+
+- **Web Analytics** counts visits and measures loading. Its script comes from
+  `static.cloudflareinsights.com` and reports each page view to `/cdn-cgi/rum` on the same domain: the
+  page's address, how long it took to load, and the browser and system version. It sets no cookie and
+  keeps nothing in the browser.
+- **The bot check** (Cloudflare calls it JavaScript Detections) runs a short test from
+  `/cdn-cgi/challenge-platform/` to tell browsers from bots, and keeps the result in a `cf_clearance`
+  cookie on `.farulivan.com`. It never blocks or challenges a visitor.
 
 ### The room server
 
@@ -122,8 +167,16 @@ docker build -f apps/server/Dockerfile -t doodle-war-server .
 docker run -p 2567:2567 doodle-war-server
 ```
 
+Two variables set what it accepts:
+
+| Variable          | What it does                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `ALLOWED_ORIGINS` | The sites a browser may use it from, comma-separated, such as `https://doodle-war.farulivan.com`. A browser on any other site is refused before a room is made. Unset, any site may: fine on a laptop, not online. |
+| `MAX_ROOMS`       | Rooms open at once, 10 if unset. Past it, a new room is refused with "Too many rooms are open right now", and the rooms already open still take players. |
+
 Rooms live in memory, so a restart ends the matches in progress. The server keeps nothing on disk, and one
-instance is enough: matches are short and small.
+instance is enough: matches are short and small. A room closes once no player has sent anything for 10
+minutes, so a lobby left open in a tab doesn't hold one of the `MAX_ROOMS` slots.
 
 **What it costs to run.** `pnpm --filter @doodle/server bench -- --rooms 20` plays 20 matches at once
 against an in-process server, each a scripted player against a server bot, and reports what they used. On
@@ -138,6 +191,42 @@ a laptop:
 
 The Docker image idles at about 80 MB. Memory is the limit, so an instance with 512 MB holds dozens of
 matches at once. The bench's own clients run in the same process, so its figures are a little high.
+
+### On Railway
+
+The room server runs on Railway from `apps/server/Dockerfile`. Its settings live in the Railway dashboard:
+
+| Setting        | Value                                                                                                     |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| Source         | `farulivan/doodle-war`, branch `main`, with **Wait for CI** on                                            |
+| Build          | the Dockerfile named by the variable `RAILWAY_DOCKERFILE_PATH` = `apps/server/Dockerfile`, built from the repository root |
+| Watch paths    | `/apps/server/**`, `/packages/sim/**`, `/package.json`, `/pnpm-lock.yaml`, `/pnpm-workspace.yaml`, `/tsconfig.base.json` |
+| Variables      | `PORT` = `2567`, `ALLOWED_ORIGINS` = `https://doodle-war.farulivan.com`                                   |
+| Replicas       | 1                                                                                                         |
+| Resources      | 512 MB of memory, 1 vCPU                                                                                  |
+| Restart policy | on failure                                                                                                |
+| Domain         | `doodle-war-rooms.farulivan.com` on port 2567: a CNAME in Cloudflare's DNS with the proxy off, and Railway's own certificate |
+
+- **Wait for CI:** a merge goes live only once the Check job has passed on `main` as well.
+- **Watch paths:** a restart ends the matches in progress, so a change to the game alone doesn't redeploy
+  the server.
+- **One replica:** rooms live in memory, so a second instance wouldn't know the first one's codes.
+- **A hard usage limit** on Railway's Usage page caps the bill, whatever happens to the server.
+- **Check `X-Real-IP` after the first deploy,** before sharing the game. The limits per address trust it,
+  and Railway doesn't say whether it replaces one the client sends. Three rooms from one machine, each
+  claiming another address:
+
+  ```sh
+  for ip in 203.0.113.1 203.0.113.2 203.0.113.3; do
+    curl -s -X POST https://doodle-war-rooms.farulivan.com/matchmake/create/doodle \
+      -H 'content-type: application/json' -H "X-Real-IP: $ip" -d '{}'; echo
+  done
+  ```
+
+  The third should answer "You already have 2 rooms open". If all three make a room, Railway passes the
+  client's header on, and the limits per address do nothing until the server sits behind Cloudflare's
+  proxy instead. Then open two lobbies in laptop tabs, and make a room from a phone on mobile data. If the
+  phone is told 2 rooms are open, every player looks like one address, and the limits have to come off.
 
 ## How the code is organised
 
@@ -157,6 +246,7 @@ apps/server     The room server: a Colyseus room that runs the same rules for on
 | Rules          | `@doodle/sim`, plain TypeScript with no DOM                |
 | Online         | [Colyseus 0.18](https://colyseus.io)                       |
 | Build and test | Vite 8, Vitest, TypeScript 7                               |
+| Hosting        | Cloudflare Workers for the game, Railway for the room server |
 
 ### How it works
 
@@ -222,15 +312,27 @@ the advisory is out. Routine updates come once a month, and only once a release 
 release is usually found and pulled before then. The actions in the workflows are pinned to commits.
 
 **pnpm** has guards of its own. It runs no install scripts: `allowBuilds` in `pnpm-workspace.yaml` turns
-down the two packages that ask, and both work without them. And `trustPolicy` there refuses a release
+down the three packages that ask, and all three work without them. And `trustPolicy` there refuses a release
 published with less proof of origin than the ones before it, which is how most hijacked npm packages have
 shipped.
 
 **The room server** trusts nothing a client sends. It acts only for the player whose unit's turn it is,
 keeps power, walking and the angle within what the rules allow, fires a special only once it's charged,
 and runs every shot itself. Rooms are private, so the 4-letter code is the only way in, and a client that
-sends more than 120 messages a second is dropped. The Docker image runs the server as an unprivileged user.
-It stores nothing: names live in memory for as long as the room does.
+sends more than 120 messages a second is dropped. Online, a browser on any site but the game's own is
+turned away before a room is made, and at most 10 rooms are open at once (see "The room server"). The
+Docker image runs the server as an unprivileged user. It stores nothing: names live in memory for as long
+as the room does.
+
+The origin check only stops browsers. A script can send any `Origin` it likes, so the server treats every
+client as a possible script and limits what one can use up instead. Each lobby change goes to every
+player, so the lobby is sent at most 10 times a second however fast it changes, and a room nobody has
+played in for 10 minutes closes. Each address may ask the matchmaker (create, join by code, reconnect) at
+most 10 times in 10 seconds, which makes guessing a room code take about a day, and keep at most 2 rooms
+open, so one machine can't hold all 10. An IPv6 address counts by its /64, since one machine usually has
+all of it. The address is the `X-Real-IP` header Railway's edge adds, checked on the live server (see "On
+Railway"). A request without it, as on a laptop, isn't limited this way. Players behind one shared
+address, such as a school network or a phone carrier, share these limits.
 
 **On GitHub**, these are set in the repository's settings, not in any file:
 

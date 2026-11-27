@@ -1,5 +1,7 @@
 import type { Client, Room } from '@colyseus/sdk';
 import {
+  CLOSE_IDLE,
+  ROOM_IDLE_MINUTES,
   ROOM_NAME,
   type AimUpdate,
   type ClientMessages,
@@ -153,7 +155,11 @@ class OnlineSession {
       const consented = code === 1000 || code === 4000;
       online.set({
         status: consented ? 'idle' : 'error',
-        error: consented ? null : 'Disconnected from the room',
+        error: consented
+          ? null
+          : code === CLOSE_IDLE
+            ? `The room closed after ${ROOM_IDLE_MINUTES} minutes with no one playing`
+            : 'Disconnected from the room',
         lobby: null,
       });
     });

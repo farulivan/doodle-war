@@ -1,7 +1,8 @@
-import { Server } from '@colyseus/core';
+import { Server, matchMaker } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { Client, type Room } from '@colyseus/sdk';
 import {
+  CLOSE_IDLE,
   ROOM_NAME,
   createMatch,
   rleDecode,
@@ -13,11 +14,13 @@ import {
 } from '@doodle/sim';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DoodleRoom } from '../src/DoodleRoom';
+import { installLimits, limits } from '../src/limits';
 
 const PORT = 25670 + Math.floor(Math.random() * 100);
 let server: Server;
 
 beforeAll(async () => {
+  installLimits();
   server = new Server({ transport: new WebSocketTransport(), greet: false });
   server.define(ROOM_NAME, DoodleRoom);
   await server.listen(PORT);
@@ -26,6 +29,21 @@ beforeAll(async () => {
 afterAll(async () => {
   await server.gracefullyShutdown(false);
 });
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A matchmaker request as a browser on the address would make it, behind Railway's edge. */
+function matchmake(method: string, target: string, address?: string): Promise<Response> {
+  return fetch(`http://localhost:${PORT}/matchmake/${method}/${target}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(address ? { 'x-real-ip': address } : {}) },
+    body: JSON.stringify({ name: 'Limits' }),
+  });
+}
+
+async function errorOf(response: Promise<Response>): Promise<string> {
+  return ((await (await response).json()) as { error?: string }).error ?? '';
+}
 
 /** Resolves with the next message of a type that passes the filter. */
 function next<T>(
@@ -144,5 +162,120 @@ describe('DoodleRoom', () => {
     for (let i = 0; i < 300; i++) room.send('ready', { ready: i % 2 === 0 });
     await dropped;
     await room.leave().catch(() => undefined);
+  });
+
+  it('turns away a browser on another site before making a room', async () => {
+    const saved = DoodleRoom.allowedOrigins;
+    DoodleRoom.allowedOrigins = ['https://doodle-war.example'];
+    const create = (origin?: string) =>
+      fetch(`http://localhost:${PORT}/matchmake/create/${ROOM_NAME}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+        body: JSON.stringify({ name: 'Origin' }),
+      });
+    try {
+      expect((await create('https://elsewhere.example')).ok).toBe(false);
+      expect((await create('https://doodle-war.example')).ok).toBe(true);
+      expect((await create()).ok).toBe(true);
+    } finally {
+      DoodleRoom.allowedOrigins = saved;
+    }
+  });
+
+  it('stops making rooms at the cap, and still lets players into open ones', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    const saved = DoodleRoom.maxRooms;
+    DoodleRoom.maxRooms = 1;
+    try {
+      await expect(new Client(endpoint).create(ROOM_NAME, { name: 'Late' })).rejects.toThrow(
+        /Too many rooms/,
+      );
+      const guest = await new Client(endpoint).joinById(host.roomId, { name: 'Guest' });
+      await guest.leave();
+    } finally {
+      DoodleRoom.maxRooms = saved;
+    }
+    await host.leave();
+  });
+
+  it('sends the lobby at most every 100 ms, however fast it changes', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    const guest = await new Client(endpoint).joinById(host.roomId, { name: 'Guest' });
+    await next<LobbySnapshot>(host, 'lobby', (l) => l.players.length === 2);
+    await sleep(200);
+
+    const seen: LobbySnapshot[] = [];
+    host.onMessage('lobby', (l: LobbySnapshot) => seen.push(l));
+    // 51 changes at once, ending on ready.
+    for (let i = 0; i < 51; i++) guest.send('ready', { ready: i % 2 === 0 });
+    await sleep(500);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.length).toBeLessThanOrEqual(5);
+    expect(seen.at(-1)?.players.find((p) => p.name === 'Guest')?.ready).toBe(true);
+
+    await guest.leave();
+    await host.leave();
+  });
+
+  it('closes a room once no one has sent anything for a while', async () => {
+    const saved = DoodleRoom.idleMs;
+    DoodleRoom.idleMs = 400;
+    try {
+      const room = await new Client(`ws://localhost:${PORT}`).create(ROOM_NAME, { name: 'Idle' });
+      const closed = new Promise<number>((resolve) => room.onLeave((code: number) => resolve(code)));
+      await next<LobbySnapshot>(room, 'lobby');
+      const opened = Date.now();
+      // Playing keeps it open...
+      for (let i = 0; i < 4; i++) {
+        await sleep(200);
+        room.send('ready', { ready: i % 2 === 0 });
+      }
+      // ...and once it stops, the room closes with a code the game explains.
+      expect(await closed).toBe(CLOSE_IDLE);
+      expect(Date.now() - opened).toBeGreaterThanOrEqual(1000);
+    } finally {
+      DoodleRoom.idleMs = saved;
+    }
+  });
+
+  it('limits how often one address may ask the matchmaker', async () => {
+    const saved = limits.requests;
+    limits.requests = 3;
+    try {
+      for (let i = 0; i < 3; i++) {
+        expect(await errorOf(matchmake('joinById', 'ZZZZ', '203.0.113.1'))).not.toMatch(/Too many tries/);
+      }
+      expect(await errorOf(matchmake('joinById', 'ZZZZ', '203.0.113.1'))).toMatch(/Too many tries/);
+      expect(await errorOf(matchmake('joinById', 'ZZZZ', '203.0.113.2'))).not.toMatch(/Too many tries/);
+      // Without Railway's header, as on a laptop, nothing is counted.
+      for (let i = 0; i < 5; i++) {
+        expect(await errorOf(matchmake('joinById', 'ZZZZ'))).not.toMatch(/Too many tries/);
+      }
+    } finally {
+      limits.requests = saved;
+    }
+  });
+
+  it('lets one address keep only 2 rooms open, counting an IPv6 /64 as one address', async () => {
+    const create = async (address: string) =>
+      (await (await matchmake('create', ROOM_NAME, address)).json()) as { roomId?: string; error?: string };
+    const first = await create('2001:db8:1:2::1');
+    const second = await create('2001:db8:1:2:aaaa::9');
+    expect(first.roomId).toBeDefined();
+    expect(second.roomId).toBeDefined();
+    expect((await create('2001:db8:1:2::77')).error).toMatch(/2 rooms open/);
+    const other = await create('198.51.100.7');
+    expect(other.roomId).toBeDefined();
+
+    // Once one of its rooms closes, the address may open another.
+    await matchMaker.getLocalRoomById(first.roomId!)?.disconnect();
+    const again = await create('2001:db8:1:2::1');
+    expect(again.roomId).toBeDefined();
+
+    for (const r of [second, other, again]) await matchMaker.getLocalRoomById(r.roomId!)?.disconnect();
   });
 });

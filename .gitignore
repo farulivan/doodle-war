@@ -3,6 +3,7 @@ dist
 .DS_Store
 *.log
 .vite
+.wrangler
 coverage
 # pnpm is this project's package manager (see "packageManager" in package.json).
 # Another manager's lockfile must never be committed next to pnpm-lock.yaml.
