@@ -175,7 +175,8 @@ Two variables set what it accepts:
 | `MAX_ROOMS`       | Rooms open at once, 10 if unset. Past it, a new room is refused with "Too many rooms are open right now", and the rooms already open still take players. |
 
 Rooms live in memory, so a restart ends the matches in progress. The server keeps nothing on disk, and one
-instance is enough: matches are short and small.
+instance is enough: matches are short and small. A room closes once no player has sent anything for 10
+minutes, so a lobby left open in a tab doesn't hold one of the `MAX_ROOMS` slots.
 
 **What it costs to run.** `pnpm --filter @doodle/server bench -- --rooms 20` plays 20 matches at once
 against an in-process server, each a scripted player against a server bot, and reports what they used. On
@@ -307,6 +308,12 @@ sends more than 120 messages a second is dropped. Online, a browser on any site 
 turned away before a room is made, and at most 10 rooms are open at once (see "The room server"). The
 Docker image runs the server as an unprivileged user. It stores nothing: names live in memory for as long
 as the room does.
+
+The origin check only stops browsers. A script can send any `Origin` it likes, so the server treats every
+client as a possible script and limits what one can use up instead. Each lobby change goes to every
+player, so the lobby is sent at most 10 times a second however fast it changes, and a room nobody has
+played in for 10 minutes closes. None of these limits is per IP address: one machine could still keep all
+10 rooms busy. Limiting by IP belongs in front of the server, at Cloudflare, and waits until it's needed.
 
 **On GitHub**, these are set in the repository's settings, not in any file:
 

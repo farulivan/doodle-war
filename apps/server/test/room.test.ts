@@ -2,6 +2,7 @@ import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { Client, type Room } from '@colyseus/sdk';
 import {
+  CLOSE_IDLE,
   ROOM_NAME,
   createMatch,
   rleDecode,
@@ -26,6 +27,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await server.gracefullyShutdown(false);
 });
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Resolves with the next message of a type that passes the filter. */
 function next<T>(
@@ -180,5 +183,47 @@ describe('DoodleRoom', () => {
       DoodleRoom.maxRooms = saved;
     }
     await host.leave();
+  });
+
+  it('sends the lobby at most every 100 ms, however fast it changes', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    const guest = await new Client(endpoint).joinById(host.roomId, { name: 'Guest' });
+    await next<LobbySnapshot>(host, 'lobby', (l) => l.players.length === 2);
+    await sleep(200);
+
+    const seen: LobbySnapshot[] = [];
+    host.onMessage('lobby', (l: LobbySnapshot) => seen.push(l));
+    // 51 changes at once, ending on ready.
+    for (let i = 0; i < 51; i++) guest.send('ready', { ready: i % 2 === 0 });
+    await sleep(500);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.length).toBeLessThanOrEqual(5);
+    expect(seen.at(-1)?.players.find((p) => p.name === 'Guest')?.ready).toBe(true);
+
+    await guest.leave();
+    await host.leave();
+  });
+
+  it('closes a room once no one has sent anything for a while', async () => {
+    const saved = DoodleRoom.idleMs;
+    DoodleRoom.idleMs = 400;
+    try {
+      const room = await new Client(`ws://localhost:${PORT}`).create(ROOM_NAME, { name: 'Idle' });
+      const closed = new Promise<number>((resolve) => room.onLeave((code: number) => resolve(code)));
+      await next<LobbySnapshot>(room, 'lobby');
+      const opened = Date.now();
+      // Playing keeps it open...
+      for (let i = 0; i < 4; i++) {
+        await sleep(200);
+        room.send('ready', { ready: i % 2 === 0 });
+      }
+      // ...and once it stops, the room closes with a code the game explains.
+      expect(await closed).toBe(CLOSE_IDLE);
+      expect(Date.now() - opened).toBeGreaterThanOrEqual(1000);
+    } finally {
+      DoodleRoom.idleMs = saved;
+    }
   });
 });
