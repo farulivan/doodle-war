@@ -196,25 +196,38 @@ matches at once. The bench's own clients run in the same process, so its figures
 
 The room server runs on Railway from `apps/server/Dockerfile`. Its settings live in the Railway dashboard:
 
-| Setting        | Value                                                                                                     |
-| -------------- | --------------------------------------------------------------------------------------------------------- |
-| Source         | `farulivan/doodle-war`, branch `main`, with **Wait for CI** on                                            |
-| Build          | the Dockerfile named by the variable `RAILWAY_DOCKERFILE_PATH` = `apps/server/Dockerfile`, built from the repository root |
-| Watch paths    | `/apps/server/**`, `/packages/sim/**`, `/package.json`, `/pnpm-lock.yaml`, `/pnpm-workspace.yaml`, `/tsconfig.base.json` |
-| Variables      | `PORT` = `2567`, `ALLOWED_ORIGINS` = `https://doodle-war.farulivan.com`                                   |
-| Replicas       | 1                                                                                                         |
-| Resources      | 512 MB of memory, 1 vCPU                                                                                  |
-| Restart policy | on failure                                                                                                |
-| Domain         | `doodle-war-rooms.farulivan.com` on port 2567: a CNAME in Cloudflare's DNS with the proxy off, and Railway's own certificate |
+| Setting         | Value                                                                                                     |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| Services        | one, for `apps/server`                                                                                    |
+| Source          | `farulivan/doodle-war`, branch `main`, with **Wait for CI** on, and no root directory                     |
+| Build           | builder Dockerfile at `apps/server/Dockerfile`, with no build command                                     |
+| Watch paths     | `/apps/server/**`, `/packages/sim/**`, `/package.json`, `/pnpm-lock.yaml`, `/pnpm-workspace.yaml`, `/tsconfig.base.json` |
+| Start command   | none                                                                                                      |
+| Variables       | `PORT` = `2567`, `ALLOWED_ORIGINS` = `https://doodle-war.farulivan.com`                                   |
+| Region          | Southeast Asia (Singapore)                                                                                |
+| Replicas        | 1                                                                                                         |
+| Resource limits | at most 512 MB of memory and 1 vCPU                                                                       |
+| Restart policy  | on failure                                                                                                |
+| Domain          | `doodle-war-rooms.farulivan.com` on port 2567: a CNAME in Cloudflare's DNS with the proxy off, and Railway's own certificate |
 
+- **One service, built from the whole repository:** Railway's GitHub import makes a service for each
+  package in the workspace, the game's included, and fills in pnpm build and start commands for each. Only
+  the server's service is kept, since the game is on Cloudflare, and its build and start commands are
+  cleared. The Dockerfile then builds from the repository root, which it needs for `packages/sim` and the
+  lockfile, and its `CMD` runs Node with no pnpm process beside it.
 - **Wait for CI:** a merge goes live only once the Check job has passed on `main` as well.
 - **Watch paths:** a restart ends the matches in progress, so a change to the game alone doesn't redeploy
   the server.
 - **One replica:** rooms live in memory, so a second instance wouldn't know the first one's codes.
+- **Resource limits are ceilings,** not a size Railway bills for. It bills what the server uses: about
+  80 MB idle, and about 140 MB with all 10 rooms playing. Past 512 MB the server is restarted, which ends
+  its matches, so a leak can't grow past that. Node runs the game on one thread, so 1 vCPU is as much as it
+  can use.
 - **A hard usage limit** on Railway's Usage page caps the bill, whatever happens to the server.
-- **Check `X-Real-IP` after the first deploy,** before sharing the game. The limits per address trust it,
-  and Railway doesn't say whether it replaces one the client sends. Three rooms from one machine, each
-  claiming another address:
+- **`X-Real-IP` comes from Railway, not the client.** The limits per address trust it, and Railway's docs
+  don't say whether it replaces one the client sends. On the live server it does: three rooms asked for
+  from one machine, each claiming another address, count against one address. To check it again after a
+  change to the hosting:
 
   ```sh
   for ip in 203.0.113.1 203.0.113.2 203.0.113.3; do
@@ -223,10 +236,11 @@ The room server runs on Railway from `apps/server/Dockerfile`. Its settings live
   done
   ```
 
-  The third should answer "You already have 2 rooms open". If all three make a room, Railway passes the
-  client's header on, and the limits per address do nothing until the server sits behind Cloudflare's
-  proxy instead. Then open two lobbies in laptop tabs, and make a room from a phone on mobile data. If the
-  phone is told 2 rooms are open, every player looks like one address, and the limits have to come off.
+  The third should answer "You already have 2 rooms open", and the second too if that machine already has
+  a room open. If all three make a room, Railway passes the client's header on, and the limits per address
+  do nothing until the server sits behind Cloudflare's proxy instead. A phone on mobile data must also
+  still make a room while two lobbies are open in laptop tabs. If the phone is told 2 rooms are open, every
+  player looks like one address, and the limits have to come off.
 
 ## How the code is organised
 
