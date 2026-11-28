@@ -1,14 +1,14 @@
 # Doodle War ✏️
 
-A turn-based artillery game fought in the margins of a notebook. Pick a doodle, read the wind, set your angle
-and power, and erase the other team off the page. Play against bots, pass one device around, or open an online
-room and send a friend its 4-letter code.
+A turn-based artillery game fought in the margins of a notebook. Pick one of six doodles, read the wind, set
+your angle and power, and erase the other team off the page. Play against bots, pass one device around, or open
+an online room and send a friend its 4-letter code.
 
 Built with TypeScript, Phaser 4 and React, with a Colyseus server for online rooms. There are no art or sound
 files: every sprite, paper texture, sound effect and music track is made in code when the game starts. The
 only bundled assets are two open-source fonts, Patrick Hand and Permanent Marker.
 
-![A 2v2 match on the Sticky Notes map](docs/screenshot-battle.jpg)
+![A 3v3 match on Margin Hills, with all six doodles on the page](docs/screenshot-battle.jpg)
 
 ## How this was built
 
@@ -60,7 +60,10 @@ Tips point these out during the first matches, and **How to play** on the title 
 - **Terrain is destructible.** Explosions erase the pencil ground, and a unit standing over a crater falls
   in. Falling off the page is a knockout.
 - **The special** (weapon 3) charges a little each turn, and faster when you deal or take damage.
-- **Draw:** once per match, each unit can ink a short line of new ground, as a wall or a bridge.
+- **Draw:** once per match, each unit can ink a short line of new ground, as a wall or a bridge. The Pencil
+  Tank's line can be 60% longer.
+- **Statuses** last for the hit unit's next turn. **Inked** walks half as far and its turn comes 100 delay
+  later; **Stuck** can't walk or hop; **Highlighted** takes 35% more from the next hit.
 - **Hop** spends part of the turn's walking to jump out of a crater or onto a ledge.
 - **Pickups** parachute in every few turns: a **Band-Aid** heals 250, a **Gold Star** adds 50 to the
   special, an **Ink Refill** gives back the Draw. Walk over one to take it. A blast near one pops it.
@@ -68,17 +71,28 @@ Tips point these out during the first matches, and **How to play** on the title 
 
 ### The doodles
 
-| Doodle       | HP   | Shots                                                                          | Special                                  |
-| ------------ | ---- | ------------------------------------------------------------------------------ | ---------------------------------------- |
-| Pencil Tank  | 1000 | Graphite Shell; Twin Lead, one shell short and one long                        | Sharpener: tunnels in, then goes off big |
-| Ink Squid    | 950  | Ink Blot, a wide splash; Splatter, which splits in three at the top            | Ink Storm: a rain of seven drops         |
-| Paper Plane  | 880  | Paper Dart, a glider the wind pushes hard; Crumple Ball, which barely feels it | Squadron: three darts in formation       |
-| Stapler Mech | 1150 | Staple, fast and flat; Rubber Band, which bounces twice                        | Staple Storm: five staples in a burst    |
+Each doodle has a job, a passive that bends one rule, two shots and a special. The select screen shows their
+health and mobility from these numbers, plus strengths and weaknesses.
 
-The Ink Squid's ink is sticky: whoever it hits walks half as far on their next turn.
+![The doodle select, with the Ink Squid picked](docs/screenshot-select.jpg)
 
-There are five maps (Margin Hills, Sticky Notes, Coffee Ring, Spiral Tower and Paper Bridges), and **Remix**
-reshuffles a map's details for a new layout. Matches run from 1v1 to 3v3, and bots come in three levels.
+| Doodle       | Role        | HP   | Passive                                            | Shots                                                                          | Special                                              |
+| ------------ | ----------- | ---- | -------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| Pencil Tank  | All-rounder | 1000 | Sketch Artist: a 60% longer Draw line              | Graphite Shell; Twin Lead, one shell short and one long                        | Sharpener: tunnels in, then goes off big             |
+| Ink Squid    | Controller  | 950  | Sticky Ink: inked enemies move less and act later  | Ink Blot, a wide splash; Splatter, which splits in three at the top            | Ink Storm: a rain of seven drops                     |
+| Paper Plane  | Skirmisher  | 880  | Glide: walks off ledges into a glide across gaps   | Paper Dart, a glider the wind pushes hard; Crumple Ball, which barely feels it | Squadron: three darts in formation                   |
+| Stapler Mech | Heavy       | 1150 | Plated: 20% less damage from splash                | Staple, fast and flat; Rubber Band, which bounces twice                        | Staple Storm: five staples in a burst                |
+| Highlighter  | Sniper      | 900  | Laser Sight: sees exactly where its beam goes      | Neon Line, a straight beam whose power sets its range; Cap Toss, which marks   | Overdrive: cuts through cover and every doodle on it |
+| Glue Blob    | Builder     | 1050 | Sticky Feet: climbs slopes more than twice as steep | Glue Glob; Glue Wall, which builds a mound of glue                             | Super Glue: a big blast that sticks enemies in place |
+
+Beams ignore wind and gravity, so the Highlighter needs a clear line; the Glue Wall is the counter, since it
+builds cover anywhere. The Highlighter can aim 30° below level, and the Glue Blob can't fire flatter than 15°.
+
+There are five maps (Margin Hills, Sticky Notes, Coffee Ring, Spiral Tower and Paper Bridges), each drawn in
+its own material: graphite hills with grass, sticky notes, a coffee stain, blue ballpoint and cardboard.
+**Every map is a mirror image down the middle, and both teams start in mirrored spots,** so neither side gets
+the better ground. **Remix** reshuffles a map's details for a new layout that is just as symmetric. Matches run
+from 1v1 to 3v3, and bots come in three levels.
 
 ## Online play
 
@@ -256,7 +270,7 @@ apps/server     The room server: a Colyseus room that runs the same rules for on
 | -------------- | ---------------------------------------------------------- |
 | Rendering      | [Phaser 4](https://phaser.io) (WebGL)                      |
 | Menus and HUD  | React 19, over the canvas                                  |
-| Art            | [rough.js](https://roughjs.com) and Canvas 2D, drawn at boot |
+| Art            | Canvas 2D vector rigs, plus [rough.js](https://roughjs.com) for effects, drawn at runtime |
 | Rules          | `@doodle/sim`, plain TypeScript with no DOM                |
 | Online         | [Colyseus 0.18](https://colyseus.io)                       |
 | Build and test | Vite 8, Vitest, TypeScript 7                               |
@@ -282,28 +296,52 @@ apps/server     The room server: a Colyseus room that runs the same rules for on
   best few, and then miss on purpose by an amount that depends on their level. They read the wind exactly;
   the miss stands in for skill. They also weigh walking over to a pickup. In the browser this runs in a
   Web Worker, so the game keeps animating while a bot thinks.
+- **The doodles are rigs.** Each one (`apps/web/src/game/art/characters/`) is a tree of parts: body,
+  turret, barrel, eyes, pupils, brows, mouth, scarf. Each part has a few frames and three "boil" variants
+  with slightly different lines. A pose function places every part from the doodle's mood (idle, walking,
+  aiming, charging, firing, hurt, falling, cheering, erased), its aim, its charge and the wind, so eyes
+  follow the shot in flight and scarves blow with the wind. The drawing kit (`art/kit.ts`) gives every
+  shape a marker outline that is heavier on the shadow side, a hatched shadow and a lit rim. The
+  battlefield packs each doodle's parts into one texture at 3x; the menus draw the same rig onto a
+  canvas, which is how the select screens show a live doodle.
+- **Shots leave from the barrel.** Every unit has a barrel `mount` in `packages/sim/src/defs.ts`, and the
+  art reads the same numbers, so the projectile starts at the tip that is drawn.
+- **The canvas runs at the screen's pixel density** (up to 2x). Phaser 4 has no setting for that, so
+  `controller.ts` sizes the canvas itself and the camera's zoom carries the factor (`view/dpr.ts`).
 
 ### Things to know before changing it
 
 - **Change rules in `packages/sim`,** never in the game or the server, and keep it free of the DOM,
   Phaser and `Math.random`. Both sides import it as TypeScript source; there's no build step for it.
 - **Change the terrain only through `Terrain`'s operations** (`carveCircle`, `fillCircle`, `fillThickLine`).
-  Online clients replay the same operations to stay identical to the server.
+  Online clients replay the same operations to stay identical to the server. A glue build goes around the
+  doodles' bodies, so its event carries those circles (`skip`), and the client fills around the same ones.
 - **The bot worker rebuilds the game state from a message** (`PlanRequest` in `apps/web/src/game/bot.worker.ts`).
   A new field on `GameState` that the bots should read has to be added there too.
 - **Messages between the game and the server are typed in one place,** `packages/sim/src/protocol.ts`.
 - **Phaser textures outlive the images that use them.** `TerrainView.destroy()` destroys its images first;
-  removing a texture that an image still shows breaks rendering.
+  removing a texture that an image still shows breaks rendering. The doodles' atlases are built once per
+  kind and kept for the session for the same reason.
+- **To work on a doodle's art,** run `pnpm dev` and open `http://localhost:5173/?gallery`. It shows every
+  doodle in every mood, large and at battlefield size, with its hitbox and barrel drawn over it. The
+  gallery exists only in development builds.
 
 ## Tests
 
-`pnpm test` runs 37 tests:
+`pnpm test` runs 62 tests:
 
 - **`packages/sim/test/sim.test.ts`:** terrain operations, every map, the turn flow (the same seed replays
   the same match, delay decides who's next, craters, falls, Draw), the protocol's encoding, pickups, the
   hop, and the bots: that one plans quickly on a real map, and that a hurt one walks over to a Band-Aid.
-- **`packages/sim/test/fullmatch.test.ts`:** a whole bot-against-bot match on each of the five maps, which
-  has to end with a winner.
+- **`packages/sim/test/roster.test.ts`:** what sets each doodle apart. The beam bursts where its power
+  says and stays straight in any wind; Overdrive goes through two doodles in a row; a mark adds 35% to the
+  next hit; glue builds where it lands and never inside a doodle; Super Glue keeps its target from walking;
+  a rain of ink pushes a turn back once, not once per drop; the Stapler takes less splash; the Plane glides
+  over a gap the others fall into; the Glue Blob climbs a step the Pencil Tank can't; the Pencil Tank draws
+  further. It also checks that every map and its spawns are mirror images, and that no doodle's shot
+  starts inside its own body at any angle it can aim.
+- **`packages/sim/test/fullmatch.test.ts`:** whole bot-against-bot matches on each of the five maps, which
+  have to end with a winner.
 - **`apps/server/test/room.test.ts`:** a real server on a local port. Two clients make a room, start a 1v1,
   check that the terrain they receive is identical, walk and fire. Others fill a team with a bot and check
   that it plays its own turn, that no one gets into a room without its code, and that a client flooding
