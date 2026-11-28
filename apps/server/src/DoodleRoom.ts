@@ -511,7 +511,7 @@ export class DoodleRoom extends Room {
     const res =
       px > 0
         ? moveActive(s, dir, px)
-        : (faceActive(s, dir), { moved: 0, fall: null, turnEnded: false, collected: [] });
+        : (faceActive(s, dir), { moved: 0, fall: null, glide: null, turnEnded: false, collected: [] });
     const msg: MoveMessage = {
       unitId: actor.id,
       x: actor.x,
@@ -520,6 +520,7 @@ export class DoodleRoom extends Room {
       facing: actor.facing,
       moveLeft: s.turn.moveLeft,
       fall: res.fall,
+      glide: res.glide,
       turnEnded: res.turnEnded,
       collected: res.collected,
     };
