@@ -1,9 +1,11 @@
 import { UNITS, type Unit, type UnitStatus } from '@doodle/sim';
 import Phaser from 'phaser';
 import { DESIGNS } from '../art/characters';
-import { INK, team } from '../art/palette';
+import { BUBBLE_MARGIN, drawBubble, makeCanvas } from '../art/doodles';
+import { INK, team, teamGlyph } from '../art/palette';
 import { BOIL_FRAMES, type Design, type Mood, type PartDef, type RigInput } from '../art/rig';
 import { settings } from '../settings';
+import { DPR } from './dpr';
 import { RIG_RES, frameKey, rigAtlas, type RigAtlas } from './rigTextures';
 import { keys } from './textures';
 
@@ -18,17 +20,51 @@ export const DEPTH = {
   unit: 20,
   projectile: 30,
   fx: 40,
+  /** Chat bubbles: over blasts, under name tags, damage numbers and the aim guide. */
+  bubble: 48,
   label: 50,
   guide: 55,
 };
 
 const BAR_W = 50;
 const BAR_H = 7;
-/** A shape per team so teams read without relying on color alone. */
-export const TEAM_GLYPH = ['●', '▲', '■', '◆'];
 
 /** How long a passing mood lasts before the doodle settles back. */
 const MOOD_SECONDS: Partial<Record<Mood, number>> = { fire: 0.55, hurt: 0.65 };
+
+/** Text is drawn this much finer than the world, like the name tags, so it stays sharp. */
+const TEXT_RES = Math.min(2, window.devicePixelRatio || 1) * 1.5;
+
+const BUBBLE_WRAP = 172;
+const BUBBLE_LINES = 3;
+const BUBBLE_PAD_X = 10;
+const BUBBLE_PAD_Y = 5;
+const BUBBLE_TAIL = 10;
+/** How far above the head the tail points: clear of the name tag, or of the turn marker too. */
+const BUBBLE_LIFT = 40;
+const BUBBLE_LIFT_ACTIVE = 70;
+let bubbleSerial = 0;
+
+interface Bubble {
+  /** Follows the doodle, and grows against the camera's zoom-out so the text stays readable. */
+  box: Phaser.GameObjects.Container;
+  /** Pops in. */
+  body: Phaser.GameObjects.Container;
+  /** Its own texture, drawn to fit the text. */
+  key: string;
+  /** When it starts to fade, on the view's clock. */
+  until: number;
+  fading: boolean;
+}
+
+/** The text wrapped to at most `max` lines, the last ending in "…" when there's more. */
+function fitLines(t: Phaser.GameObjects.Text, text: string, max: number): string {
+  const lines = t.getWrappedText(text);
+  if (lines.length <= max) return text;
+  const last = Array.from(lines[max - 1].trimEnd());
+  while (last.length > 0 && t.getWrappedText(`${last.join('')}…`).length > 1) last.pop();
+  return [...lines.slice(0, max - 1), `${last.join('').trimEnd()}…`].join('\n');
+}
 
 interface PartNode {
   def: PartDef;
@@ -72,6 +108,7 @@ export class UnitView {
   private look: { x: number; y: number } | null = null;
   private wind = 0;
   private statuses: Record<UnitStatus, boolean> = { inked: false, rooted: false, marked: false };
+  private bubble: Bubble | null = null;
   facing: 1 | -1 = 1;
   angle = 45;
   dead = false;
@@ -108,9 +145,9 @@ export class UnitView {
     for (const def of this.atlas.rig.children.get('') ?? []) this.rig.add(build(def, [0, 0]));
 
     const t = team(unit.team);
-    const res = Math.min(2, window.devicePixelRatio || 1) * 1.5;
+    const res = TEXT_RES;
     this.label = scene.add
-      .text(unit.x, unit.y - 60, `${TEAM_GLYPH[unit.team % TEAM_GLYPH.length]} ${unit.name}`, {
+      .text(unit.x, unit.y - 60, `${teamGlyph(unit.team)} ${unit.name}`, {
         fontFamily: '"Patrick Hand", cursive',
         fontSize: '17px',
         color: t.color,
@@ -199,6 +236,7 @@ export class UnitView {
       }
     }
     this.drawBar();
+    this.placeBubble();
   }
 
   /** The doodle whose turn it is aims; the rest idle. */
@@ -318,6 +356,82 @@ export class UnitView {
     );
     this.movingFor = Math.max(0, this.movingFor - dtMs);
     this.applyPose(dtMs);
+    if (this.bubble) {
+      this.placeBubble();
+      if (!this.bubble.fading && this.time >= this.bubble.until) this.fadeBubble();
+    }
+  }
+
+  /** A chat line in a speech bubble over the doodle. A new line takes the place of the last. */
+  say(text: string): void {
+    if (this.dead) return;
+    this.clearBubble();
+    const scene = this.scene;
+    const label = scene.add.text(0, 0, '', {
+      fontFamily: '"Patrick Hand", cursive',
+      fontSize: '16px',
+      color: INK,
+      align: 'center',
+      wordWrap: { width: BUBBLE_WRAP, useAdvancedWrap: true },
+      resolution: TEXT_RES,
+    });
+    label.setText(fitLines(label, text, BUBBLE_LINES)).setOrigin(0.5, 1);
+    const m = BUBBLE_MARGIN;
+    const w = Math.ceil(label.width) + BUBBLE_PAD_X * 2 + m * 2;
+    const h = Math.ceil(label.height) + BUBBLE_PAD_Y * 2 + BUBBLE_TAIL + m * 2;
+    const key = `bubble-${++bubbleSerial}`;
+    const canvas = makeCanvas(Math.ceil(w * TEXT_RES), Math.ceil(h * TEXT_RES));
+    drawBubble(canvas, w, h, BUBBLE_TAIL, this.seed * 31 + bubbleSerial, TEXT_RES);
+    scene.textures.addCanvas(key, canvas);
+    // The tail's tip sits on the anchor; the text sits in the box above it.
+    const bg = scene.add
+      .image(0, m, key)
+      .setOrigin(0.5, 1)
+      .setScale(1 / TEXT_RES);
+    label.setPosition(0, -(BUBBLE_TAIL + BUBBLE_PAD_Y));
+    const body = scene.add.container(0, 0, [bg, label]);
+    const box = scene.add.container(0, 0, [body]).setDepth(DEPTH.bubble);
+    // Longer lines stay up longer, from 3.5 to 7 seconds.
+    const seconds = Math.min(7, 3.5 + Array.from(text).length * 0.045);
+    this.bubble = { box, body, key, until: this.time + seconds, fading: false };
+    this.placeBubble();
+    if (!settings.get().reducedMotion) {
+      body.setScale(0.6);
+      scene.tweens.add({ targets: body, scale: 1, duration: 200, ease: 'Back.easeOut' });
+    }
+  }
+
+  private placeBubble(): void {
+    const b = this.bubble;
+    if (!b) return;
+    const lift = this.marker.visible ? BUBBLE_LIFT_ACTIVE : BUBBLE_LIFT;
+    b.box.setPosition(this.container.x, this.container.y + this.design.frame[1] - lift);
+    // Zoomed in, it scales with the world like the name tag. Zoomed out, it keeps its size on screen.
+    const zoom = this.scene.cameras.main.zoom / DPR;
+    b.box.setScale(Math.max(1, 1 / zoom));
+  }
+
+  private fadeBubble(): void {
+    const b = this.bubble;
+    if (!b || b.fading) return;
+    b.fading = true;
+    this.scene.tweens.add({
+      targets: b.box,
+      alpha: 0,
+      duration: 300,
+      onComplete: () => {
+        if (this.bubble === b) this.clearBubble();
+      },
+    });
+  }
+
+  private clearBubble(): void {
+    const b = this.bubble;
+    if (!b) return;
+    this.bubble = null;
+    this.scene.tweens.killTweensOf([b.box, b.body]);
+    b.box.destroy();
+    if (this.scene.textures.exists(b.key)) this.scene.textures.remove(b.key);
   }
 
   private applyPose(_dtMs: number): void {
@@ -388,6 +502,7 @@ export class UnitView {
     if (this.dead) return;
     this.dead = true;
     this.passing = null;
+    this.fadeBubble();
     this.marker.setVisible(false);
     for (const icon of this.statusIcons.values()) icon.setVisible(false);
     this.bar.clear();
@@ -456,6 +571,7 @@ export class UnitView {
   }
 
   destroy(): void {
+    this.clearBubble();
     this.container.destroy();
     this.label.destroy();
     this.bar.destroy();

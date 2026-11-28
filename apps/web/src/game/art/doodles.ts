@@ -323,3 +323,52 @@ export function drawParachute(canvas: HTMLCanvasElement, seed: number): void {
   rc.line(w - 3, h * 0.42, w / 2, h - 1, o);
   rc.line(w / 2, h * 0.42, w / 2, h - 1, o);
 }
+
+/** Room around a speech bubble's outline, for its wobble and shadow. */
+export const BUBBLE_MARGIN = 3;
+
+/**
+ * A speech bubble for a chat line over a doodle: a wobbly rounded box with its tail at the bottom middle.
+ * `w` and `h` are the whole bubble, tail and margin included, in world pixels. The canvas is `scale` times
+ * that, so the lines stay sharp.
+ */
+export function drawBubble(
+  canvas: HTMLCanvasElement,
+  w: number,
+  h: number,
+  tail: number,
+  seed: number,
+  scale: number,
+): void {
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(scale, scale);
+  const rc = rough.canvas(canvas);
+  const m = BUBBLE_MARGIN;
+  const [x0, y0, x1, y1] = [m, m, w - m, h - tail - m];
+  const r = Math.min(11, (y1 - y0) / 2);
+  const cx = w / 2;
+  const half = Math.min(8, (x1 - x0) / 4);
+  const d = [
+    `M${x0 + r} ${y0}`,
+    `H${x1 - r}`,
+    `Q${x1} ${y0} ${x1} ${y0 + r}`,
+    `V${y1 - r}`,
+    `Q${x1} ${y1} ${x1 - r} ${y1}`,
+    `H${cx + half}`,
+    `L${cx} ${h - m}`,
+    `L${cx - half * 1.2} ${y1}`,
+    `H${x0 + r}`,
+    `Q${x0} ${y1} ${x0} ${y1 - r}`,
+    `V${y0 + r}`,
+    `Q${x0} ${y0} ${x0 + r} ${y0}`,
+    'Z',
+  ].join(' ');
+  ctx.save();
+  ctx.translate(1.5, 2.5);
+  rc.path(d, base(seed, { fill: 'rgba(0, 0, 0, 0.16)', fillStyle: 'solid', stroke: 'none', roughness: 0.6 }));
+  ctx.restore();
+  rc.path(
+    d,
+    base(seed, { fill: '#fffdf6', fillStyle: 'solid', strokeWidth: 1.8, roughness: 0.7, bowing: 0.6 }),
+  );
+}

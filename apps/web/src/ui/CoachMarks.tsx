@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { isTouch } from '../game/device';
 import { hud, useStore } from '../game/store';
 
 const KEY = 'doodle-war:tutorial:v1';
-const isTouch =
-  window.matchMedia('(pointer: coarse)').matches || new URLSearchParams(location.search).has('touch');
 
 interface Step {
   text: string;

@@ -2,7 +2,8 @@
 
 Doodle War is a browser game with an optional room server for online play. There is no account and no
 sign-in. The game stores its settings, record and the name last typed in the player's browser. The room
-server keeps the players' names and the match in memory while the room lasts, and stores nothing.
+server keeps the players' names, the match and the room's last 30 chat lines in memory while the room lasts,
+and stores nothing. It doesn't log chat.
 
 ## Reporting a vulnerability
 

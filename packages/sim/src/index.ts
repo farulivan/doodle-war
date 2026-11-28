@@ -7,4 +7,5 @@ export * from './state';
 export * from './terrain';
 export * from './ai';
 export * from './protocol';
+export * from './censor';
 export * from './pickups';

@@ -404,6 +404,11 @@ export class BattleScene extends Phaser.Scene {
     for (const v of this.units.values()) v.setActive(v.id === id);
   }
 
+  /** A chat line in a speech bubble over a doodle. */
+  say(id: number, text: string): void {
+    this.units.get(id)?.say(text);
+  }
+
   /** The aiming doodle's charge, so it grits its teeth as the power climbs. */
   setCharge(id: number, power: number): void {
     this.units.get(id)?.setCharge(power);

@@ -48,6 +48,7 @@ Wi-Fi can open `http://<your computer's address>:5173` and join a room too.
 | Hop out of a crater   | J or Shift                            | ⤴              |
 | Draw an ink line      | E, then drag                          | ✎, then drag   |
 | Look around           | Drag, scroll to zoom, Tab for the map | Drag, pinch    |
+| Chat (online)         | Enter, type, Enter to send            | 💬             |
 
 Tips point these out during the first matches, and **How to play** on the title screen explains the rest.
 
@@ -100,6 +101,21 @@ from 1v1 to 3v3, and bots come in three levels.
 (`?room=KQ7P`) that joins it directly. The host picks the map and the teams, and can fill empty seats with
 bots. A player whose connection drops has 45 seconds to come back, and reloading the page rejoins the same
 seat.
+
+Everyone in the room can chat, in the lobby and through the match. In battle a line shows up twice: in a
+speech bubble over the sender's doodle, and in a short feed under the turn queue, which also covers doodles
+that are off screen. Enter opens the chat unless something else already uses it: a text field, the pause
+menu, or a button reached with Tab. Enter is not a fire key, so a habit from other games can't waste a
+turn. On a phone, 💬 opens it, the field sits at the top of the screen where the keyboard can't cover it, and
+the controls under the keyboard step aside while typing.
+
+The server cleans every line before sending it on. It strips characters that hide or reverse text, trims
+piles of accents, and caps a line at 120 characters. A light word filter then swaps strong swear words and
+slurs, in English and Indonesian, for comic-strip symbols such as `#@$%!`. It matches whole words, so
+"pantai" and "class" are left alone, and sees through capitals, accents, digits for letters and stretched
+letters, but not a word spelled out with spaces. Each player may send 5 lines at once, then one every
+1.5 seconds. A line over that is dropped, and only the sender sees "Slow down a little". A room keeps its
+last 30 lines in memory, so a player who joins or reloads sees the talk so far. Nothing is written to disk.
 
 The server runs the match. Clients send what the player does (walk, aim, fire, draw, hop, skip), and the
 server runs the rules and sends back what happened. Walking is the one exception: it's predicted on the

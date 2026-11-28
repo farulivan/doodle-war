@@ -2,10 +2,12 @@ import { Server, matchMaker } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { Client, type Room } from '@colyseus/sdk';
 import {
+  CHAT_MAX_CHARS,
   CLOSE_IDLE,
   ROOM_NAME,
   createMatch,
   rleDecode,
+  type ChatLine,
   type LobbySnapshot,
   type MatchStart,
   type MoveMessage,
@@ -118,6 +120,90 @@ describe('DoodleRoom', () => {
     await host.leave();
     await guest.leave();
   }, 30000);
+
+  it('passes chat to everyone in the room, the sender too, cleaned', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    const guest = await new Client(endpoint).joinById(host.roomId, { name: 'Guest' });
+    await next<LobbySnapshot>(host, 'lobby', (l) => l.players.length === 2);
+
+    const toHost = next<ChatLine>(host, 'chat', (l) => !l.system);
+    const toGuest = next<ChatLine>(guest, 'chat', (l) => !l.system);
+    guest.send('chat', { text: '  gg\n wp\u202e!  ' });
+    const [a, b] = await Promise.all([toHost, toGuest]);
+    expect(b).toEqual(a);
+    expect(a).toMatchObject({ from: guest.sessionId, name: 'Guest', team: 1, text: 'gg wp!' });
+
+    // Swear words reach no one, even split by a zero-width space.
+    const masked = next<ChatLine>(host, 'chat', (l) => !l.system);
+    guest.send('chat', { text: 'oh sh\u200bit' });
+    expect((await masked).text).toBe('oh #@$%');
+
+    // A line with nothing to show is dropped; the long one after it arrives cut to the limit.
+    const longOne = next<ChatLine>(host, 'chat', (l) => !l.system);
+    guest.send('chat', { text: '\u200b \u202e ' });
+    guest.send('chat', { text: 'x'.repeat(500) });
+    expect(Array.from((await longOne).text)).toHaveLength(CHAT_MAX_CHARS);
+
+    await guest.leave();
+    await host.leave();
+  });
+
+  it('drops chat past the allowance, telling only the sender, who stays in the room', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    const guest = await new Client(endpoint).joinById(host.roomId, { name: 'Chatty' });
+    await next<LobbySnapshot>(host, 'lobby', (l) => l.players.length === 2);
+    await sleep(100);
+
+    const heard: ChatLine[] = [];
+    const notes: ChatLine[] = [];
+    host.onMessage('chat', (l: ChatLine) => heard.push(l));
+    guest.onMessage('chat', (l: ChatLine) => l.system && notes.push(l));
+    for (let i = 0; i < 12; i++) guest.send('chat', { text: `line ${i}` });
+    await sleep(400);
+    expect(heard.map((l) => l.text)).toEqual(['line 0', 'line 1', 'line 2', 'line 3', 'line 4']);
+    // Told once, not once per dropped line.
+    expect(notes.map((l) => l.text)).toEqual(['Slow down a little']);
+
+    // A moment later they may talk again.
+    await sleep(1600);
+    const back = next<ChatLine>(host, 'chat', (l) => l.text === 'back');
+    guest.send('chat', { text: 'back' });
+    expect((await back).from).toBe(guest.sessionId);
+
+    await guest.leave();
+    await host.leave();
+  });
+
+  it('shows a player who joins the talk so far, and keeps chat going through the match', async () => {
+    const endpoint = `ws://localhost:${PORT}`;
+    const host = await new Client(endpoint).create(ROOM_NAME, { name: 'Host' });
+    await next<LobbySnapshot>(host, 'lobby');
+    const said = next<ChatLine>(host, 'chat', (l) => l.text === 'anyone?');
+    host.send('chat', { text: 'anyone?' });
+    await said;
+
+    const guest = await new Client(endpoint).joinById(host.roomId, { name: 'Late' });
+    const log = next<ChatLine[]>(guest, 'chatLog');
+    const joined = next<ChatLine>(guest, 'chat', (l) => !!l.system && l.name === 'Late');
+    expect((await log).map((l) => l.text)).toContain('anyone?');
+    expect((await joined).text).toBe('joined');
+
+    guest.send('ready', { ready: true });
+    await next<LobbySnapshot>(host, 'lobby', (l) => l.players.every((p) => p.ready || p.host));
+    const started = next<MatchStart>(guest, 'start');
+    host.send('start', {});
+    await started;
+    const during = next<ChatLine>(host, 'chat', (l) => l.text === 'gl hf');
+    guest.send('chat', { text: 'gl hf' });
+    expect((await during).from).toBe(guest.sessionId);
+
+    await guest.leave();
+    await host.leave();
+  });
 
   it('lets the host fill a team with a bot that plays its own turns', async () => {
     const c = new Client(`ws://localhost:${PORT}`);

@@ -27,7 +27,10 @@ matchMaker.controller.getCorsHeaders = (headers: Headers): Record<string, string
 };
 
 const server = new Server({
-  transport: new WebSocketTransport({ pingInterval: 5000 }),
+  // A client's largest message is a chat line, under 1 KB. Anything over 4 KB closes its connection, and
+  // compression stays off, so a small message can't unpack into a big one. Both are the transport's
+  // defaults, set here so they can't change unnoticed.
+  transport: new WebSocketTransport({ pingInterval: 5000, maxPayload: 4 * 1024, perMessageDeflate: false }),
   greet: false,
 });
 
