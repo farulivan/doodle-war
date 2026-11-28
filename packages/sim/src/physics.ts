@@ -1,6 +1,6 @@
-import { UNITS, type ProjectileDef, type WeaponDef } from './defs';
-import type { GameState, ProjectileTrack, ShotEvent, Unit, Wind } from './state';
-import type { Terrain } from './terrain';
+import { BUILD_CLEARANCE, INK_DELAY, MARK_BONUS, UNITS, type ProjectileDef, type WeaponDef } from './defs';
+import type { GameState, ProjectileTrack, ShotEvent, Unit, UnitStatus, Wind } from './state';
+import { GLUE, circleSkipper, type Terrain } from './terrain';
 
 export const TICK_RATE = 60;
 export const DT = 1 / TICK_RATE;
@@ -13,6 +13,10 @@ export const WALK_SPEED = 55;
 const FALL_GRAVITY = 1100;
 const MAX_CLIMB = 3;
 const MAX_STEP_DOWN = 6;
+/** A glide holds its height this far before it starts to sink. */
+const GLIDE_LEVEL = 40;
+/** How far a glide can lift onto a ledge it meets. */
+const GLIDE_FLARE = 8;
 const MAX_SHOT_TICKS = TICK_RATE * 14;
 /** Extra damage once sudden death starts. */
 export const SUDDEN_DEATH_MULT = 1.5;
@@ -81,25 +85,39 @@ export function settleUnit(state: GameState, u: Unit): FallInfo | null {
   return { fromY, toY: land, dead: false };
 }
 
+/** Where a glide started and where it ended, before any drop that follows. */
+export interface GlideInfo {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+}
+
+export interface WalkResult {
+  moved: number;
+  fall: FallInfo | null;
+  /** Set when the unit glided off a ledge (the Paper Plane's passive). */
+  glide: GlideInfo | null;
+}
+
 /** Walks a unit up to `px` pixels, climbing small steps and stepping off ledges. */
-export function walk(
-  state: GameState,
-  u: Unit,
-  dir: 1 | -1,
-  px: number,
-): { moved: number; fall: FallInfo | null } {
+export function walk(state: GameState, u: Unit, dir: 1 | -1, px: number): WalkResult {
   const t = state.terrain;
-  const r = bodyRadius(u);
+  const def = UNITS[u.kind];
+  const r = def.bodyRadius;
+  const climb = def.climb ?? MAX_CLIMB;
   u.facing = dir;
   let moved = 0;
   let fall: FallInfo | null = null;
+  let glide: GlideInfo | null = null;
   while (moved < px) {
     const nx = u.x + dir;
     if (nx < 4 || nx > t.width - 5) break;
+    const y0 = u.y;
     let ny = u.y;
     if (t.solid(nx, ny)) {
       let climbed = false;
-      for (let k = 1; k <= MAX_CLIMB; k++) {
+      for (let k = 1; k <= climb; k++) {
         if (!t.solid(nx, ny - k)) {
           ny -= k;
           climbed = true;
@@ -118,12 +136,40 @@ export function walk(
     u.y = ny;
     moved++;
     if (!standingAt(t, nx, ny)) {
+      if (def.glide) glide = glideOff(t, u, dir, def.glide, y0);
       fall = settleUnit(state, u);
       break;
     }
   }
   if (u.alive) u.tilt = computeTilt(t, u.x, u.y);
-  return { moved, fall };
+  return { moved, fall, glide };
+}
+
+/**
+ * Glides on from a ledge at the ledge's height. It holds level for a while, then sinks a pixel in five, and
+ * lifts onto a ledge it meets if that is only a little higher. It stops where it lands, at a wall, or when
+ * the glide runs out. Whole pixels only, so the server and the client glide to the same spot.
+ */
+function glideOff(t: Terrain, u: Unit, dir: 1 | -1, distance: number, fromY: number): GlideInfo | null {
+  const r = bodyRadius(u);
+  const fromX = u.x - dir;
+  u.y = fromY;
+  for (let k = 1; k <= distance; k++) {
+    const nx = u.x + dir;
+    let ny = k > GLIDE_LEVEL && k % 5 === 0 ? u.y + 1 : u.y;
+    if (nx < 4 || nx > t.width - 5) break;
+    if (t.solid(nx, ny)) {
+      let lift = 1;
+      while (lift <= GLIDE_FLARE && t.solid(nx, ny - lift)) lift++;
+      if (lift > GLIDE_FLARE) break;
+      ny -= lift;
+    }
+    if (t.solid(nx, ny - r) || t.solid(nx, ny - 2 * r + 2)) break;
+    u.x = nx;
+    u.y = ny;
+    if (standingAt(t, nx, ny)) break;
+  }
+  return { fromX, fromY, toX: u.x, toY: u.y };
 }
 
 /** World direction of the barrel for a relative aim angle in degrees. */
@@ -139,11 +185,21 @@ export function worldElevation(u: Unit, angleDeg: number): number {
   return Math.round(u.facing === 1 ? angleDeg - tiltDeg : angleDeg + tiltDeg);
 }
 
+/** Where the barrel turns, in the world, for a unit standing where it is. */
+export function mountPoint(u: Unit): { x: number; y: number } {
+  const m = UNITS[u.kind].mount;
+  const c = Math.cos(u.tilt);
+  const s = Math.sin(u.tilt);
+  const ox = m.x * u.facing;
+  return { x: u.x + ox * c - m.y * s, y: u.y + ox * s + m.y * c };
+}
+
+/** The barrel's tip, where shots leave from. */
 export function muzzle(u: Unit, angleDeg: number): { x: number; y: number } {
-  const c = bodyCenter(u);
+  const p = mountPoint(u);
   const d = aimDirection(u, angleDeg);
-  const reach = bodyRadius(u) + 9;
-  return { x: c.x + d.dx * reach, y: c.y + d.dy * reach };
+  const reach = UNITS[u.kind].mount.length;
+  return { x: p.x + d.dx * reach, y: p.y + d.dy * reach };
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +216,12 @@ interface SimProjectile {
   bouncesLeft: number;
   drilled: number;
   tunnel: number[];
+  /** Distance flown so far, for shots with a range. */
+  traveled: number;
+  /** Bursts once it has flown this far. */
+  rangeLimit: number;
+  /** Units a piercing shot has already passed through. */
+  pierced: number[];
   dead: boolean;
   track: ProjectileTrack | null;
 }
@@ -186,6 +248,10 @@ interface SimContext {
   damageMult: number;
   nextId: () => number;
   spawned: SimProjectile[];
+  /** Marks already used up by a hit in this shot, by unit index. */
+  markUsed: boolean[];
+  /** Statuses already given out in this shot, as `unitId:status`, so a rain of drops counts once. */
+  statusGiven: Set<string>;
 }
 
 export interface RunShotOptions {
@@ -224,6 +290,8 @@ export function runShot(
     damageMult: state.suddenDeath ? SUDDEN_DEATH_MULT : 1,
     nextId: opts.dry ? () => localId++ : () => state.nextProjectileId++,
     spawned: [],
+    markUsed: state.units.map(() => false),
+    statusGiven: new Set(),
   };
 
   const origin = muzzle(actor, angle);
@@ -238,7 +306,9 @@ export function runShot(
       s.done = true;
       const dir = aimDirection(actor, angle + (s.angleOffset ?? 0));
       const speed = baseSpeed * (s.powerScale ?? 1) * (s.def.speedScale ?? 1);
-      active.push(spawn(ctx, s.def, origin.x, origin.y, dir.dx * speed, dir.dy * speed, tick));
+      const p = spawn(ctx, s.def, origin.x, origin.y, dir.dx * speed, dir.dy * speed, tick);
+      if (s.def.range) p.rangeLimit = rangeFor(s.def.range, power * (s.powerScale ?? 1));
+      active.push(p);
     }
     for (const p of active) if (!p.dead) step(ctx, p, tick);
     for (const child of ctx.spawned) active.push(child);
@@ -278,9 +348,17 @@ function spawn(
     bouncesLeft: def.bounces ?? 0,
     drilled: 0,
     tunnel: [],
+    traveled: 0,
+    rangeLimit: Infinity,
+    pierced: [],
     dead: false,
     track,
   };
+}
+
+/** How far a ranged shot flies at this power before it bursts. Never closer than a body length. */
+export function rangeFor(range: number, power: number): number {
+  return Math.max(40, (range * Math.max(0, Math.min(100, power))) / 100);
 }
 
 function step(ctx: SimContext, p: SimProjectile, tick: number): void {
@@ -309,11 +387,24 @@ function step(ctx: SimContext, p: SimProjectile, tick: number): void {
       ctx.out.events.push({ type: 'lost', tick, x: p.x, y: p.y, projectileId: p.id });
       break;
     }
-    const hit = unitAt(ctx, nx, ny);
+    const hit = unitAt(ctx, nx, ny, p.pierced);
     if (hit !== null) {
       p.x = nx;
       p.y = ny;
+      if (def.pierce) {
+        // Straight through: a full hit on this doodle, and on to the next.
+        p.pierced.push(hit);
+        hitUnit(ctx, p, hit, tick);
+        continue;
+      }
       explode(ctx, p, tick, hit);
+      break;
+    }
+    p.traveled += stepLen;
+    if (p.traveled >= p.rangeLimit) {
+      p.x = nx;
+      p.y = ny;
+      explode(ctx, p, tick, null);
       break;
     }
     if (t.solid(nx, ny)) {
@@ -342,10 +433,10 @@ function step(ctx: SimContext, p: SimProjectile, tick: number): void {
   p.track?.points.push(p.x, p.y);
 }
 
-function unitAt(ctx: SimContext, x: number, y: number): number | null {
+function unitAt(ctx: SimContext, x: number, y: number, skip: number[]): number | null {
   const units = ctx.state.units;
   for (let i = 0; i < units.length; i++) {
-    if (!ctx.alive[i]) continue;
+    if (!ctx.alive[i] || skip.includes(i)) continue;
     const u = units[i];
     const r = UNITS[u.kind].bodyRadius;
     const dx = x - u.x;
@@ -416,16 +507,29 @@ function explode(ctx: SimContext, p: SimProjectile, tick: number, directUnit: nu
   const ink = !!(def.ink || def.split?.child.ink);
   const { state, out } = ctx;
   out.impacts.push({ x: p.x, y: p.y });
-  out.events.push({ type: 'explode', tick, x: p.x, y: p.y, radius, projectileId: p.id, ink, directUnit });
+  out.events.push({
+    type: 'explode',
+    tick,
+    x: p.x,
+    y: p.y,
+    radius,
+    projectileId: p.id,
+    sprite: def.sprite,
+    ink,
+    directUnit,
+  });
 
   if (!ctx.dry) {
+    const tunnelR = def.pierce ? 11 : 8;
     for (let i = 0; i < p.tunnel.length; i += 2) {
-      carve(ctx, p.tunnel[i], p.tunnel[i + 1], 8, tick);
+      carve(ctx, p.tunnel[i], p.tunnel[i + 1], tunnelR, tick);
     }
-    carve(ctx, p.x, p.y, radius, tick);
-    // Pickups caught in the blast pop.
+    if (def.build) build(ctx, p.x, p.y, def.build, tick);
+    else carve(ctx, p.x, p.y, radius, tick);
+    // Pickups caught in the blast pop, and so do ones the glue would bury.
+    const reach = Math.max(radius, def.build ?? 0) + 6;
     state.pickups = state.pickups.filter((pk) => {
-      if (Math.hypot(pk.x - p.x, pk.y - 8 - p.y) > radius + 6) return true;
+      if (Math.hypot(pk.x - p.x, pk.y - 8 - p.y) > reach) return true;
       out.events.push({ type: 'pickup', tick, pickupId: pk.id, unitId: null, kind: pk.kind });
       return false;
     });
@@ -433,9 +537,10 @@ function explode(ctx: SimContext, p: SimProjectile, tick: number, directUnit: nu
 
   const units = state.units;
   for (let i = 0; i < units.length; i++) {
-    if (!ctx.alive[i]) continue;
+    if (!ctx.alive[i] || p.pierced.includes(i)) continue;
     const u = units[i];
-    const r = UNITS[u.kind].bodyRadius;
+    const unitDef = UNITS[u.kind];
+    const r = unitDef.bodyRadius;
     let amount = 0;
     if (i === directUnit) {
       amount = damage;
@@ -443,10 +548,69 @@ function explode(ctx: SimContext, p: SimProjectile, tick: number, directUnit: nu
       const d = Math.hypot(p.x - u.x, p.y - (u.y - r));
       if (d >= radius + r) continue;
       const f = 1 - Math.max(0, d - r) / radius;
-      amount = damage * 0.9 * Math.pow(f, 0.8);
+      amount = damage * 0.9 * Math.pow(f, 0.8) * (unitDef.splashTaken ?? 1);
     }
-    amount = Math.round(amount);
-    if (amount > 0) applyDamage(ctx, i, amount, tick, i === directUnit, ink);
+    applyHit(ctx, p.def, i, amount, tick, i === directUnit, ink);
+  }
+}
+
+/** A piercing shot passing through a doodle: a direct hit that doesn't stop the shot. */
+function hitUnit(ctx: SimContext, p: SimProjectile, i: number, tick: number): void {
+  const ink = !!p.def.ink;
+  ctx.out.impacts.push({ x: p.x, y: p.y });
+  applyHit(ctx, p.def, i, p.def.damage * ctx.damageMult, tick, true, ink);
+}
+
+/** Damage after a mark, if the unit has one this shot hasn't used yet. */
+function applyHit(
+  ctx: SimContext,
+  def: ProjectileDef,
+  i: number,
+  base: number,
+  tick: number,
+  direct: boolean,
+  ink: boolean,
+): void {
+  const u = ctx.state.units[i];
+  let amount = base;
+  if (u.marked && !ctx.markUsed[i] && amount > 0) {
+    amount *= MARK_BONUS;
+    ctx.markUsed[i] = true;
+    if (!ctx.dry) u.marked = false;
+  }
+  amount = Math.round(amount);
+  if (amount > 0) applyDamage(ctx, i, amount, tick, direct, ink);
+  if (ctx.dry || !ctx.alive[i]) return;
+  const enemy = u.team !== ctx.actor.team;
+  if (def.root && enemy) setStatus(ctx, u, 'rooted', tick);
+  if (def.mark && enemy && amount > 0) setStatus(ctx, u, 'marked', tick);
+}
+
+/** Gives a unit a status. Returns false if this shot already gave it that one. */
+function setStatus(ctx: SimContext, u: Unit, status: UnitStatus, tick: number): boolean {
+  if (status === 'rooted') u.rooted = 1;
+  else if (status === 'marked') u.marked = true;
+  else u.inked = 1;
+  const key = `${u.id}:${status}`;
+  if (ctx.statusGiven.has(key)) return false;
+  ctx.statusGiven.add(key);
+  ctx.out.events.push({ type: 'status', tick, unitId: u.id, status });
+  return true;
+}
+
+/** Fills a circle with glue, around every doodle's body. */
+function build(ctx: SimContext, x: number, y: number, radius: number, tick: number): void {
+  const cx = Math.round(x);
+  const cy = Math.round(y);
+  const r = Math.round(radius);
+  const skip: number[] = [];
+  ctx.state.units.forEach((u, i) => {
+    if (!ctx.alive[i]) return;
+    const br = bodyRadius(u);
+    skip.push(Math.round(u.x), Math.round(u.y - br), br + BUILD_CLEARANCE);
+  });
+  if (ctx.state.terrain.fillCircle(cx, cy, r, GLUE, circleSkipper(skip))) {
+    ctx.out.events.push({ type: 'build', tick, x: cx, y: cy, radius: r, skip });
   }
 }
 
@@ -489,10 +653,8 @@ function applyDamage(
     actor.special = Math.min(100, actor.special + dealt * 0.08);
   }
   out.events.push({ type: 'damage', tick, unitId: u.id, amount: dealt, hpAfter: u.hp, direct });
-  if (ink && !dead) {
-    u.inked = 1;
-    out.events.push({ type: 'inked', tick, unitId: u.id });
-  }
+  // Sticky ink: the enemy's next turn comes later, once per shot however many drops land.
+  if (ink && !dead && setStatus(ctx, u, 'inked', tick) && enemy) u.delay += INK_DELAY;
   if (dead) {
     u.alive = false;
     if (enemy) actor.stats.kills++;

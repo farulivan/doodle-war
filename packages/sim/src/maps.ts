@@ -271,8 +271,21 @@ export function getMap(id: string): MapDef {
   return map;
 }
 
+/**
+ * Builds a map's terrain. The right half is always the left half mirrored, and so are the spawns (see
+ * placeUnits), so both teams start on the same ground whatever the seed.
+ */
 export function buildTerrain(map: MapDef, seed = map.seed): Terrain {
   const terrain = new Terrain(map.width, map.height);
   map.generate(terrain, new Rng(seed));
+  mirror(terrain);
   return terrain;
+}
+
+function mirror(t: Terrain): void {
+  const half = Math.floor(t.width / 2);
+  for (let y = 0; y < t.height; y++) {
+    const row = y * t.width;
+    for (let x = 0; x < half; x++) t.data[row + t.width - 1 - x] = t.data[row + x];
+  }
 }

@@ -46,6 +46,10 @@ export interface Unit {
   special: number;
   /** Turns left with halved movement after an ink hit. */
   inked: number;
+  /** Turns left glued to the spot: no walking or hopping. */
+  rooted: number;
+  /** Takes extra damage from the next hit, then the mark is gone. */
+  marked: boolean;
   drawUsed: boolean;
   lastPower: number | null;
   /** Lifetime stats, shown on the results screen. */
@@ -104,6 +108,8 @@ export interface FireInput {
   slot: WeaponSlot;
 }
 
+export type UnitStatus = 'inked' | 'rooted' | 'marked';
+
 export type ShotEvent =
   | {
       type: 'explode';
@@ -112,12 +118,19 @@ export type ShotEvent =
       y: number;
       radius: number;
       projectileId: number;
+      /** What went off, so the blast can look like it. */
+      sprite: ProjectileSprite;
       ink: boolean;
       directUnit: number | null;
     }
   | { type: 'carve'; tick: number; x: number; y: number; radius: number }
+  /**
+   * Glue filled a circle. `skip` holds the doodles' bodies it went around, as flat [x, y, r, ...], so a
+   * copy of the terrain can repeat the fill exactly.
+   */
+  | { type: 'build'; tick: number; x: number; y: number; radius: number; skip: number[] }
   | { type: 'damage'; tick: number; unitId: number; amount: number; hpAfter: number; direct: boolean }
-  | { type: 'inked'; tick: number; unitId: number }
+  | { type: 'status'; tick: number; unitId: number; status: UnitStatus }
   | { type: 'split'; tick: number; x: number; y: number; projectileId: number }
   | { type: 'bounce'; tick: number; x: number; y: number; projectileId: number }
   | { type: 'lost'; tick: number; x: number; y: number; projectileId: number }

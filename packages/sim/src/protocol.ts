@@ -1,4 +1,5 @@
 import type { UnitKind } from './defs';
+import type { GlideInfo } from './physics';
 import type { Collected } from './pickups';
 import type { BotLevel, FireInput, MatchConfig, Pickup, ShotResult, TurnState, Unit } from './state';
 import type { Rect } from './terrain';
@@ -95,6 +96,8 @@ export interface MoveMessage {
   facing: 1 | -1;
   moveLeft: number;
   fall: { fromY: number; toY: number; dead: boolean } | null;
+  /** A Paper Plane's glide off a ledge, before any fall in `fall`. */
+  glide?: GlideInfo | null;
   turnEnded: boolean;
   collected: Collected[];
   /** Set when this move was a hop, so watchers can animate the arc. */

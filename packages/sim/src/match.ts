@@ -1,11 +1,11 @@
 import {
   DRAW_DELAY,
-  DRAW_MAX_LENGTH,
   DRAW_REACH,
   DRAW_THICKNESS,
   SKIP_DELAY,
   SPECIAL_MAX,
   UNITS,
+  drawLengthFor,
   type WeaponSlot,
 } from './defs';
 import { buildTerrain, getMap } from './maps';
@@ -20,6 +20,7 @@ import {
   standingAt,
   walk,
   type FallInfo,
+  type GlideInfo,
 } from './physics';
 import { collectPickups, maybeSpawnPickup, settlePickups, type Collected } from './pickups';
 import { Rng } from './rng';
@@ -58,6 +59,8 @@ export function createMatch(config: MatchConfig): GameState {
       delay: 0,
       special: 0,
       inked: 0,
+      rooted: 0,
+      marked: false,
       drawUsed: false,
       lastPower: null,
       stats: { damageDealt: 0, damageTaken: 0, shots: 0, kills: 0 },
@@ -103,6 +106,23 @@ export function createMatch(config: MatchConfig): GameState {
 
 function placeUnits(terrain: Terrain, units: Unit[], teams: number[], rng: Rng): void {
   const w = terrain.width;
+  // Two teams get mirror-image spawns on the mirror-image page, so neither side starts better off.
+  if (teams.length === 2) {
+    const left = units.filter((u) => u.team === teams[0]);
+    const right = units.filter((u) => u.team === teams[1]);
+    const count = Math.max(left.length, right.length);
+    const placed: number[] = [];
+    const xs: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const target = w * 0.06 + (w * 0.34 * (i + 0.5)) / count + rng.range(-30, 30);
+      const x = findSpawnX(terrain, Math.round(target), placed, w / 2 - 40);
+      placed.push(x);
+      xs.push(x);
+    }
+    left.forEach((u, i) => spawnAt(terrain, u, xs[i], 1));
+    right.forEach((u, i) => spawnAt(terrain, u, w - 1 - xs[i], -1));
+    return;
+  }
   const regionWidth = w / teams.length;
   const placed: number[] = [];
   teams.forEach((team, ti) => {
@@ -111,21 +131,25 @@ function placeUnits(terrain: Terrain, units: Unit[], teams: number[], rng: Rng):
     const span = regionWidth * 0.75;
     members.forEach((u, i) => {
       const target = start + (span * (i + 0.5)) / members.length + rng.range(-30, 30);
-      const x = findSpawnX(terrain, Math.round(target), placed);
+      const x = findSpawnX(terrain, Math.round(target), placed, w);
       placed.push(x);
-      const top = terrain.topSurface(x) ?? terrain.height / 2;
-      u.x = x;
-      u.y = top - 1;
-      u.facing = x < w / 2 ? 1 : -1;
-      u.tilt = computeTilt(terrain, u.x, u.y);
+      spawnAt(terrain, u, x, x < w / 2 ? 1 : -1);
     });
   });
 }
 
-function findSpawnX(terrain: Terrain, target: number, taken: number[]): number {
+function spawnAt(terrain: Terrain, u: Unit, x: number, facing: 1 | -1): void {
+  const top = terrain.topSurface(x) ?? terrain.height / 2;
+  u.x = x;
+  u.y = top - 1;
+  u.facing = facing;
+  u.tilt = computeTilt(terrain, u.x, u.y);
+}
+
+function findSpawnX(terrain: Terrain, target: number, taken: number[], maxX: number): number {
   for (let off = 0; off <= 400; off += 8) {
     for (const x of off === 0 ? [target] : [target + off, target - off]) {
-      if (x < 60 || x > terrain.width - 60) continue;
+      if (x < 60 || x > Math.min(maxX, terrain.width - 60)) continue;
       if (taken.some((t) => Math.abs(t - x) < 70)) continue;
       const top = terrain.topSurface(x);
       if (top === null || top < 80) continue;
@@ -171,12 +195,14 @@ export function beginTurn(state: GameState): Unit | null {
   const def = UNITS[next.kind];
   const slowed = next.inked > 0;
   if (slowed) next.inked--;
+  const stuck = next.rooted > 0;
+  if (stuck) next.rooted--;
   next.special = Math.min(SPECIAL_MAX, next.special + PASSIVE_SPECIAL_GAIN);
   state.turn = {
     number,
     activeId: next.id,
     wind: rollWind(state),
-    moveLeft: def.moveBudget * (slowed ? 0.5 : 1),
+    moveLeft: stuck ? 0 : def.moveBudget * (slowed ? 0.5 : 1),
     moveUsed: 0,
     drew: false,
   };
@@ -212,6 +238,8 @@ export function clampAngle(unit: Unit, angle: number): number {
 export interface MoveResult {
   moved: number;
   fall: FallInfo | null;
+  /** Set when a Paper Plane glided off a ledge; any fall after it is in `fall`. */
+  glide: GlideInfo | null;
   /** True if the unit walked off the page and the turn ended. */
   turnEnded: boolean;
   collected: Collected[];
@@ -220,7 +248,8 @@ export interface MoveResult {
 /** Walks the active unit, limited by what is left of its movement budget. */
 export function moveActive(state: GameState, dir: 1 | -1, px: number): MoveResult {
   const actor = activeUnit(state);
-  if (!actor || state.phase !== 'turn') return { moved: 0, fall: null, turnEnded: false, collected: [] };
+  if (!actor || state.phase !== 'turn')
+    return { moved: 0, fall: null, glide: null, turnEnded: false, collected: [] };
   const budget = Math.floor(Math.min(px, state.turn.moveLeft));
   const res = walk(state, actor, dir, budget);
   state.turn.moveLeft -= res.moved;
@@ -264,6 +293,7 @@ export function hopActive(state: GameState): HopResult {
     ok: false,
     moved: 0,
     fall: null,
+    glide: null,
     turnEnded: false,
     collected: [],
     fromX: 0,
@@ -298,6 +328,7 @@ export function hopActive(state: GameState): HopResult {
         ok: true,
         moved: dx,
         fall,
+        glide: null,
         turnEnded: true,
         collected: [],
         fromX,
@@ -311,6 +342,7 @@ export function hopActive(state: GameState): HopResult {
       ok: true,
       moved: dx,
       fall,
+      glide: null,
       turnEnded: false,
       collected: collectPickups(state, actor),
       fromX,
@@ -349,8 +381,9 @@ export function drawLine(state: GameState, x0: number, y0: number, x1: number, y
   if (actor.drawUsed) return fail('Draw already used this match');
   const len = Math.hypot(x1 - x0, y1 - y0);
   if (len < 12) return fail('Line too short');
-  if (len > DRAW_MAX_LENGTH) {
-    const k = DRAW_MAX_LENGTH / len;
+  const maxLength = drawLengthFor(actor.kind);
+  if (len > maxLength) {
+    const k = maxLength / len;
     x1 = x0 + (x1 - x0) * k;
     y1 = y0 + (y1 - y0) * k;
   }
