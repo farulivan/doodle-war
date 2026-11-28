@@ -1,5 +1,6 @@
 import { Room, ServerError, type AuthContext, type Client } from '@colyseus/core';
 import {
+  CHAT_BACKLOG,
   CLOSE_IDLE,
   MAPS,
   MAX_PER_TEAM,
@@ -7,7 +8,9 @@ import {
   UNIT_KINDS,
   activeUnit,
   beginTurn,
+  censor,
   checkWinner,
+  cleanChat,
   compactShot,
   createMatch,
   drawLine,
@@ -22,6 +25,7 @@ import {
   sliceRect,
   type AimUpdate,
   type BotLevel,
+  type ChatLine,
   type ClientMessages,
   type GameState,
   type LobbyPlayer,
@@ -52,6 +56,11 @@ const MAX_MOVE_PER_MESSAGE = 12;
  * ready as fast as it may would otherwise make the server send gigabytes an hour.
  */
 const LOBBY_EVERY_MS = 100;
+/** Chat lines a player may send at once, and how often they get one more after that. */
+const CHAT_BURST = 5;
+const CHAT_REFILL_MS = 1500;
+/** A player over the chat limit is told so at most this often, so a flood isn't answered line for line. */
+const CHAT_WARN_EVERY_MS = 3000;
 
 function makeCode(): string {
   for (;;) {
@@ -142,6 +151,11 @@ export class DoodleRoom extends Room {
   private lastActivity = Date.now();
   private lobbySentAt = 0;
   private lobbyTimer: { clear(): void } | null = null;
+  /** The last CHAT_BACKLOG lines, kept in memory only while the room lasts. */
+  private chatLog: ChatLine[] = [];
+  private chatId = 0;
+  /** Each player's chat allowance: lines they may send now, topped up over time. */
+  private chatAllowance = new Map<string, { lines: number; at: number; warnedAt: number }>();
 
   override onCreate(): void {
     // The message reaches the player as it is. Words such as "full" or "failed" would make the game show
@@ -171,6 +185,7 @@ export class DoodleRoom extends Room {
     this.on('fire', (c, m) => this.onFire(c, m));
     this.on('draw', (c, m) => this.onDraw(c, m));
     this.on('backToLobby', () => this.onBackToLobby());
+    this.on('chat', (c, m) => this.onChat(c, m));
   }
 
   /**
@@ -209,7 +224,7 @@ export class DoodleRoom extends Room {
       const bot = this.players.find((p) => p.bot && p.team === team);
       if (bot) this.players = this.players.filter((p) => p !== bot);
     }
-    this.players.push({
+    const joined: LobbyPlayer = {
       id: client.sessionId,
       name: cleanName(options.name, `Player ${this.players.length + 1}`),
       team,
@@ -219,8 +234,12 @@ export class DoodleRoom extends Room {
       botLevel: 'normal',
       host: !this.players.some((p) => p.host && !p.bot),
       connected: true,
-    });
+    };
+    this.players.push(joined);
     this.broadcastLobby();
+    // The talk so far, then the line that says they're here.
+    client.send('chatLog', this.chatLog);
+    this.addChat({ from: '', name: joined.name, team: joined.team, text: 'joined', system: true });
   }
 
   override onDrop(client: Client): void {
@@ -238,13 +257,16 @@ export class DoodleRoom extends Room {
     if (p) p.connected = true;
     this.broadcastLobby();
     if (this.state_ && this.phase !== 'lobby') client.send('sync', this.syncMessage());
+    client.send('chatLog', this.chatLog);
   }
 
   override onLeave(client: Client): void {
+    this.chatAllowance.delete(client.sessionId);
     const p = this.player(client);
     if (!p) return;
     if (this.phase === 'lobby') {
       this.players = this.players.filter((x) => x !== p);
+      this.addChat({ from: '', name: p.name, team: p.team, text: 'left', system: true });
     } else {
       // Mid-match: a bot takes over their units so the match can finish.
       p.connected = false;
@@ -256,6 +278,7 @@ export class DoodleRoom extends Room {
           }
         }
         this.broadcast('toast', { text: `${p.name} left. A bot takes over.` });
+        this.addChat({ from: '', name: p.name, team: p.team, text: 'left. A bot takes over.', system: true });
         const actor = activeUnit(this.state_);
         if (actor && this.owners[actor.id] === 'bot' && !this.busy && this.state_.phase === 'turn')
           this.runBot(this.turnToken);
@@ -409,6 +432,57 @@ export class DoodleRoom extends Room {
     for (const p of this.players) if (!p.bot) p.ready = false;
     void this.unlock();
     this.sendLobby();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chat: in the lobby, during the match and after it.
+
+  /**
+   * The allowance comes first, so a flood is turned away before any work on its text. A line then loses its
+   * hidden characters and swear words before anyone sees it, and one with nothing left to show is dropped.
+   */
+  private onChat(client: Client, m: ClientMessages['chat']): void {
+    const p = this.player(client);
+    if (!p || typeof m.text !== 'string' || !this.mayChat(client)) return;
+    const text = censor(cleanChat(m.text));
+    if (text) this.addChat({ from: p.id, name: p.name, team: p.team, text });
+  }
+
+  /**
+   * Takes one line from the player's allowance: CHAT_BURST at once, then one more every CHAT_REFILL_MS.
+   * A line past it is dropped, and the player, and only they, hears why.
+   */
+  private mayChat(client: Client): boolean {
+    const now = Date.now();
+    const a = this.chatAllowance.get(client.sessionId) ?? { lines: CHAT_BURST, at: now, warnedAt: 0 };
+    this.chatAllowance.set(client.sessionId, a);
+    a.lines = Math.min(CHAT_BURST, a.lines + (now - a.at) / CHAT_REFILL_MS);
+    a.at = now;
+    if (a.lines >= 1) {
+      a.lines -= 1;
+      return true;
+    }
+    if (now - a.warnedAt >= CHAT_WARN_EVERY_MS) {
+      a.warnedAt = now;
+      const note: ChatLine = {
+        id: ++this.chatId,
+        from: '',
+        name: '',
+        team: 0,
+        text: 'Slow down a little',
+        system: true,
+      };
+      client.send('chat', note);
+    }
+    return false;
+  }
+
+  /** Sends a line to everyone, the sender too, so all see the same cleaned text in the same order. */
+  private addChat(line: Omit<ChatLine, 'id'>): void {
+    const sent: ChatLine = { id: ++this.chatId, ...line };
+    this.chatLog.push(sent);
+    if (this.chatLog.length > CHAT_BACKLOG) this.chatLog.shift();
+    this.broadcast('chat', sent);
   }
 
   // ---------------------------------------------------------------------------
