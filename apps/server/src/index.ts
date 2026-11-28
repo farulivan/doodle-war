@@ -15,8 +15,11 @@ installLimits();
 // CORS alone lets a request that skips the preflight through.
 matchMaker.controller.getCorsHeaders = (headers: Headers): Record<string, string> => {
   const allowed = DoodleRoom.allowedOrigins;
-  if (allowed.length === 0) return {};
   const origin = headers.get('origin');
+  // The SDK sends its requests with credentials, and a browser refuses those when the answer allows any
+  // origin with "*". With no list set, as on a laptop, the caller's own origin is allowed instead.
+  if (allowed.length === 0)
+    return origin === null ? {} : { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
   return {
     'Access-Control-Allow-Origin': origin !== null && originAllowed(origin) ? origin : allowed[0],
     Vary: 'Origin',
