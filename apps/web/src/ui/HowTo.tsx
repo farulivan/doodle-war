@@ -39,6 +39,9 @@ export function HowTo({ onBack }: { onBack(): void }) {
           <li>
             <kbd>P</kbd> pause, <kbd>M</kbd> mute
           </li>
+          <li>
+            Online, <kbd>Enter</kbd> or 💬 to <b>chat</b>. Your line pops up over your doodle
+          </li>
         </ul>
 
         <h3>Turn order</h3>

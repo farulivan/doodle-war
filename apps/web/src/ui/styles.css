@@ -2685,3 +2685,260 @@ kbd {
     align-self: center;
   }
 }
+
+/* ---------- Chat ---------- */
+
+/* The queue's column in the top bar. The battle chat hangs under it without widening the bar. */
+.hud-left {
+  position: relative;
+  min-width: 0;
+}
+
+/* Under the queue, in the sky that's usually empty up there. Above the dimmed results and menu screens,
+   so players can still say gg. */
+.chat {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  left: 0;
+  z-index: 2;
+  width: min(24rem, 34vw);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.chat-toggle {
+  position: relative;
+}
+
+.chat-badge {
+  position: absolute;
+  top: -0.5rem;
+  right: -0.5rem;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.25rem;
+  border: 1.5px solid var(--ink);
+  border-radius: 0.65rem;
+  background: var(--red);
+  color: var(--paper-hi);
+  font-size: 0.75rem;
+  line-height: 1.05rem;
+  text-align: center;
+}
+
+.chat-line {
+  font-size: 0.95rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.chat-line.system {
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+/* The feed: touches go through it to the battlefield, so it never gets in the way of dragging. */
+.chat-feed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  max-width: 100%;
+}
+
+.chat-feed .chat-line {
+  max-width: 100%;
+  padding: 0.1rem 0.55rem;
+  background: rgba(255, 253, 246, 0.92);
+  border: 2px solid var(--ink);
+  border-radius: var(--wobble-2);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.14);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  animation: chat-feed 8s linear forwards;
+}
+
+@keyframes chat-feed {
+  0% {
+    opacity: 0;
+  }
+  3% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-empty {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.chat-panel {
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  background: rgba(255, 253, 246, 0.97);
+}
+
+.chat-panel .chat-log {
+  max-height: min(14rem, 38vh);
+}
+
+.chat-form {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.chat-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.55rem;
+  font-family: var(--hand);
+  /* 16px or more, or iOS zooms the page in when the field gets focus. */
+  font-size: 1rem;
+  color: var(--ink);
+  background: var(--paper-hi);
+  border: 2px solid var(--ink);
+  border-radius: var(--wobble-2);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.chat-form input:focus {
+  outline: 3px dashed var(--ink-blue);
+  outline-offset: 1px;
+}
+
+.chat-send,
+.chat-close {
+  flex: none;
+  min-height: 2.3rem;
+}
+
+/* Closed, the field stays in the page unseen, so 💬 can focus it and bring a phone keyboard up. */
+.chat:not(.open) .chat-form {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 900px), (max-height: 560px) {
+  .chat {
+    width: min(17rem, 62vw);
+  }
+  .chat-line {
+    font-size: 0.88rem;
+  }
+}
+
+@media (pointer: coarse) {
+  .chat-send,
+  .chat-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* Typing on a touch screen. The keyboard comes up from the bottom, so the controls it covers step aside,
+   and the chat moves up to the top, where the keyboard can't reach its field. */
+body.chat-typing .panel,
+body.chat-typing .touch,
+body.chat-typing .queue {
+  display: none;
+}
+
+body.chat-typing .chat {
+  top: 0;
+}
+
+body.chat-typing .chat-panel .chat-log {
+  max-height: 22vh;
+  max-height: 22dvh;
+}
+
+/* Portrait phones: the full width, under the timer. */
+@media (max-width: 600px) {
+  body.chat-typing .chat {
+    top: 3.4rem;
+    width: calc(100vw - 0.8rem);
+  }
+}
+
+/* Landscape phones: beside the timer. */
+@media (max-height: 480px) {
+  body.chat-typing .chat {
+    width: min(28rem, calc(100vw - 12rem));
+  }
+}
+
+/* The lobby: chat beside the stage card, or under the header on touch screens. */
+.lobby-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(15rem, 1fr);
+  gap: 0 1.4rem;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .lobby-bottom {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lobby-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  scroll-margin-top: 0.4rem;
+}
+
+.lobby-chat .section-title {
+  margin-bottom: 0;
+}
+
+.lobby-chat .chat-log {
+  height: 7.4rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--paper-hi);
+  border: 2px solid var(--ink);
+  border-radius: var(--wobble-2);
+}
+
+/* Under the header on a touch screen: a shorter log keeps the field high, clear of the keyboard. */
+.setup-head + .lobby-chat .chat-log {
+  height: 4.8rem;
+}
+
+/* Landscape phones: as little as possible above the field, so the keyboard leaves it in view. */
+@media (max-height: 480px) {
+  .setup-head + .lobby-chat .section-title {
+    display: none;
+  }
+  .setup-head + .lobby-chat .chat-log {
+    height: 3.4rem;
+  }
+}

@@ -23,6 +23,13 @@ export function team(index: number): TeamStyle {
   return TEAMS[index % TEAMS.length];
 }
 
+/** A shape per team so teams read without relying on color alone. */
+export const TEAM_GLYPH = ['●', '▲', '■', '◆'];
+
+export function teamGlyph(index: number): string {
+  return TEAM_GLYPH[index % TEAM_GLYPH.length];
+}
+
 export function cssHexToNumber(hex: string): number {
   return parseInt(hex.slice(1), 16);
 }

@@ -78,7 +78,8 @@ export function Results({ summary, onRematch, onSetup, onMenu }: Props) {
         <div className="row" style={{ justifyContent: 'center', marginTop: '1.2rem' }}>
           {summary.online ? (
             <>
-              <button className="btn primary" onClick={onRematch} autoFocus>
+              {/* No autofocus online: Enter there opens the chat, so "gg" doesn't send the room back. */}
+              <button className="btn primary" onClick={onRematch}>
                 Back to lobby
               </button>
               <button className="btn" onClick={onMenu}>

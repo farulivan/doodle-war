@@ -2,9 +2,11 @@ import { MAX_PER_TEAM, UNITS, type BotLevel, type LobbyPlayer } from '@doodle/si
 import { useState } from 'react';
 import { unitIconUrl } from '../game/art/portrait';
 import { team as teamStyle } from '../game/art/palette';
+import { isTouch } from '../game/device';
 import { useStore } from '../game/store';
 import { online, onlineAvailable, savedName, session } from '../net/online';
 import { CharacterSelect } from './CharacterSelect';
+import { LobbyChat } from './Chat';
 import { TimerPicker } from './MatchOptions';
 import { ROSTER, mapById } from './roster';
 import { MapCanvas, StageSelect } from './StageSelect';
@@ -185,6 +187,9 @@ export function Lobby({ onLeave }: { onLeave(): void }) {
           </div>
         </div>
 
+        {/* On a phone the chat goes near the top, so the keyboard can't cover its field. */}
+        {isTouch && <LobbyChat />}
+
         <div className="teams">
           {([0, 1] as const).map((t) => (
             <div className="team-col" key={t}>
@@ -215,25 +220,32 @@ export function Lobby({ onLeave }: { onLeave(): void }) {
           ))}
         </div>
 
-        <div className="section-title">Battlefield {isHost ? '' : '(the host picks)'}</div>
-        <button className="lobby-stage" onClick={() => setStage(true)}>
-          <MapCanvas
-            mapId={map.id}
-            seed={lobby.settings.mapSeed}
-            width={240}
-            height={110}
-            perTeam={perTeam}
-          />
-          <span className="lobby-stage-text">
-            <b>{map.name}</b>
-            <span>{map.blurb}</span>
-            <span className="lobby-stage-meta">
-              {lobby.settings.mapSeed !== null ? 'Remixed layout · ' : ''}
-              {lobby.settings.turnSeconds === 0 ? 'No turn timer' : `${lobby.settings.turnSeconds}s turns`}
-            </span>
-            <span className="btn small">{isHost ? 'Change stage' : 'View stage'}</span>
-          </span>
-        </button>
+        <div className="lobby-bottom">
+          <div>
+            <div className="section-title">Battlefield {isHost ? '' : '(the host picks)'}</div>
+            <button className="lobby-stage" onClick={() => setStage(true)}>
+              <MapCanvas
+                mapId={map.id}
+                seed={lobby.settings.mapSeed}
+                width={240}
+                height={110}
+                perTeam={perTeam}
+              />
+              <span className="lobby-stage-text">
+                <b>{map.name}</b>
+                <span>{map.blurb}</span>
+                <span className="lobby-stage-meta">
+                  {lobby.settings.mapSeed !== null ? 'Remixed layout · ' : ''}
+                  {lobby.settings.turnSeconds === 0
+                    ? 'No turn timer'
+                    : `${lobby.settings.turnSeconds}s turns`}
+                </span>
+                <span className="btn small">{isHost ? 'Change stage' : 'View stage'}</span>
+              </span>
+            </button>
+          </div>
+          {!isTouch && <LobbyChat />}
+        </div>
 
         <div className="setup-foot">
           <button className="btn" onClick={onLeave}>

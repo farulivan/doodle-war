@@ -41,6 +41,7 @@ import Phaser from 'phaser';
 import { session, type OnlineHandlers } from '../net/online';
 import { audio } from './audio';
 import { botPlanner } from './botPlanner';
+import { typingOnTouch } from './device';
 import { recordMatch } from './profile';
 import { hud, initialHud, type ActiveInfo, type MatchSummary, type QueueEntry } from './store';
 import { BattleScene } from './view/BattleScene';
@@ -130,9 +131,22 @@ class GameController {
           input: { mouse: { preventDefaultWheel: true } },
           banner: false,
         });
-        window.addEventListener('resize', () => {
+        const resize = () => {
           const [nw, nh] = size();
           this.game?.scale.resize(nw, nh);
+        };
+        // Some phone browsers shrink the page while the on-screen keyboard is up. The battlefield keeps its
+        // size under the keyboard rather than rescaling, and catches up once the typing stops. Only a resize
+        // that was held back runs then: each one resets the canvas and the camera's zoom.
+        let heldBack = false;
+        window.addEventListener('resize', () => {
+          if (typingOnTouch()) heldBack = true;
+          else resize();
+        });
+        document.addEventListener('focusout', () => {
+          if (!heldBack) return;
+          heldBack = false;
+          window.setTimeout(resize, 0);
         });
         this.game.events.once('ready', () => {
           const scene = new BattleScene();
@@ -790,8 +804,9 @@ class GameController {
       KeyW: 'up',
       ArrowDown: 'down',
       KeyS: 'down',
+      // Enter isn't a fire key: online it opens the chat (see Chat.tsx), and a player pressing it to talk
+      // shouldn't lose the turn to a weak shot.
       Space: 'fire',
-      Enter: 'fire',
     };
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -822,6 +837,8 @@ class GameController {
           this.hop();
           break;
         case 'Tab':
+          // Once the match is over, Tab moves between the results buttons as usual.
+          if (hud.get().phase === 'over') break;
           e.preventDefault();
           this.toggleOverview();
           break;
@@ -1105,6 +1122,13 @@ class GameController {
           this.finish();
         }),
       toast: (text) => this.toast(text),
+      // Straight away, not queued behind the animations: talk doesn't wait for a shot to land.
+      chat: (line) => {
+        const state = this.state;
+        if (!state || !this.scene || this.mode !== 'online' || line.system) return;
+        const unit = state.units[this.owners.indexOf(line.from)];
+        if (unit?.alive) this.scene.say(unit.id, line.text);
+      },
     };
   }
 

@@ -26,7 +26,8 @@ type Sfx =
   | 'glide'
   | 'callout'
   | 'select'
-  | 'whoosh';
+  | 'whoosh'
+  | 'chat';
 export type Mood = 'menu' | 'battle';
 
 const SFX_LEVEL = 0.7;
@@ -209,6 +210,11 @@ class Audio {
         break;
       case 'click':
         this.tone('triangle', 900 * v, 600, 0.05, 0.15);
+        break;
+      case 'chat':
+        // Two soft taps, like a note passed across the desk.
+        this.tone('sine', 1320 * v, 1320 * v, 0.07, 0.07);
+        this.tone('sine', 1760 * v, 1760 * v, 0.09, 0.06, 0.07);
         break;
       case 'turn':
         this.tone('triangle', 659, 659, 0.12, 0.16);

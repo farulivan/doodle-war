@@ -4,15 +4,13 @@ import { unitIconUrl } from '../game/art/portrait';
 import { team } from '../game/art/palette';
 import { audio } from '../game/audio';
 import { controller, type Control } from '../game/controller';
+import { isTouch } from '../game/device';
 import { settings } from '../game/settings';
 import { hud, useStore, type QueueEntry } from '../game/store';
+import { BattleChat } from './Chat';
 import { CoachMarks } from './CoachMarks';
 import { shotIconUrl } from './LivePortrait';
 import { SettingsPanel } from './SettingsPanel';
-
-/** Touch controls show on touch screens, or anywhere with ?touch in the URL. */
-const isTouch =
-  window.matchMedia('(pointer: coarse)').matches || new URLSearchParams(location.search).has('touch');
 
 export function Hud({ onQuit }: { onQuit(): void }) {
   const paused = useStore(hud, (s) => s.paused);
@@ -40,13 +38,18 @@ function TopBar() {
   const turnNumber = useStore(hud, (s) => s.turnNumber);
   const suddenDeath = useStore(hud, (s) => s.suddenDeath);
   const muted = useStore(settings, (s) => s.muted);
+  const isOnline = useStore(hud, (s) => s.online);
 
   return (
     <div className="hud-top">
-      <div className="queue" aria-label="Turn order">
-        {queue.slice(0, 8).map((q) => (
-          <QueueItem key={q.id} q={q} current={q.id === activeId} />
-        ))}
+      {/* The chat sits under the queue, however many rows the queue takes: the sky up there is usually empty. */}
+      <div className="hud-left">
+        <div className="queue" aria-label="Turn order">
+          {queue.slice(0, 8).map((q) => (
+            <QueueItem key={q.id} q={q} current={q.id === activeId} />
+          ))}
+        </div>
+        {isOnline && <BattleChat />}
       </div>
       <div className="turn-info">
         <Wind />
@@ -498,7 +501,7 @@ function PauseMenu({ onQuit }: { onQuit(): void }) {
           </button>
         </div>
         <p style={{ fontSize: '0.9rem', color: 'var(--ink-soft)', marginTop: '1rem' }}>
-          ←→ walk · ↑↓ aim · hold Space to fire · 1/2/3 weapons · E draw
+          ←→ walk · ↑↓ aim · hold Space to fire · 1/2/3 weapons · E draw{isOnline ? ' · Enter chat' : ''}
         </p>
       </div>
     </div>
