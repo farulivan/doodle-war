@@ -15,6 +15,10 @@ export const MAX_PER_TEAM = 3;
 export const ROOM_IDLE_MINUTES = 10;
 /** The close code a client gets when its room closes for that reason. Colyseus' own codes are 4000 to 4010. */
 export const CLOSE_IDLE = 4100;
+/** The longest chat line, in characters. */
+export const CHAT_MAX_CHARS = 120;
+/** Chat lines a room keeps, so a player who joins or reloads sees the talk so far. */
+export const CHAT_BACKLOG = 30;
 
 export interface LobbyPlayer {
   /** Session id for humans, `bot-<n>` for bots. */
@@ -58,6 +62,7 @@ export interface ClientMessages {
   fire: FireInput;
   draw: { x0: number; y0: number; x1: number; y1: number };
   backToLobby: Record<string, never>;
+  chat: { text: string };
 }
 
 // Server -> client -----------------------------------------------------------
@@ -129,6 +134,59 @@ export interface SyncMessage extends MatchStart {
   suddenDeath: boolean;
   seconds: number;
   phase: 'playing' | 'over';
+}
+
+/** A line of chat, as everyone in the room sees it. */
+export interface ChatLine {
+  /** Counts up in each room. */
+  id: number;
+  /** The sender's session id, or '' for a note from the room itself. */
+  from: string;
+  /** The sender's name and team when they sent it. */
+  name: string;
+  team: 0 | 1;
+  text: string;
+  /** A note from the room, such as someone joining, rather than something a player said. */
+  system?: boolean;
+}
+
+// Chat text --------------------------------------------------------------------
+
+/** Characters that show as nothing, besides the usual whitespace. Lines made of them would look blank. */
+const BLANKS = /[\s\u115f\u1160\u2800\u3164\uffa0]+/gu;
+/**
+ * Control characters, unpaired surrogates and every format character except the two joiners. Format
+ * characters hide or reorder text: U+202E shows the rest of a line backwards. Emoji sequences need the
+ * zero-width joiner, and Persian and Indic text need the non-joiner.
+ */
+const HIDDEN = /\p{Cs}|(?![\u200c\u200d])\p{Cf}/gu;
+/** More than 4 combining marks on one letter is "zalgo" text, which spills over the lines around it. */
+const MARK_PILE = /(\p{M}{4})\p{M}+/gu;
+const VISIBLE = /[\p{L}\p{N}\p{P}\p{S}]/u;
+
+/**
+ * A chat line as it may be shown: no hidden or reordering characters, no piles of accents, one space
+ * between words and at most CHAT_MAX_CHARS characters. Empty when nothing visible is left.
+ */
+export function cleanChat(text: unknown): string {
+  if (typeof text !== 'string') return '';
+  const cut = Array.from(
+    text
+      // Plenty for a full line, and it bounds the work on a huge message.
+      .slice(0, CHAT_MAX_CHARS * 8)
+      .normalize('NFC')
+      .replace(/\p{Cc}/gu, ' ')
+      .replace(HIDDEN, '')
+      .replace(MARK_PILE, '$1')
+      .replace(BLANKS, ' ')
+      .trim(),
+  )
+    .slice(0, CHAT_MAX_CHARS)
+    .join('')
+    // A joiner left at the end by the cut joins nothing.
+    .replace(/[\u200c\u200d]+$/u, '')
+    .trim();
+  return VISIBLE.test(cut) ? cut : '';
 }
 
 // Run-length codec for terrain bytes ------------------------------------------
