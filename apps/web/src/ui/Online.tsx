@@ -1,9 +1,13 @@
-import { MAPS, MAX_PER_TEAM, UNITS, UNIT_KINDS, type BotLevel, type LobbyPlayer } from '@doodle/sim';
+import { MAX_PER_TEAM, UNITS, type BotLevel, type LobbyPlayer } from '@doodle/sim';
 import { useState } from 'react';
-import { unitIconUrl } from '../game/art/doodles';
+import { unitIconUrl } from '../game/art/portrait';
 import { team as teamStyle } from '../game/art/palette';
 import { useStore } from '../game/store';
 import { online, onlineAvailable, savedName, session } from '../net/online';
+import { CharacterSelect } from './CharacterSelect';
+import { TimerPicker } from './MatchOptions';
+import { ROSTER, mapById } from './roster';
+import { MapCanvas, StageSelect } from './StageSelect';
 
 export function OnlineMenu({ onBack, initialCode }: { onBack(): void; initialCode?: string }) {
   const [name, setName] = useState(savedName() || '');
@@ -80,13 +84,14 @@ export function OnlineMenu({ onBack, initialCode }: { onBack(): void; initialCod
 }
 
 const LEVELS: BotLevel[] = ['easy', 'normal', 'hard'];
-const TIMERS = [0, 20, 30, 45];
 
 export function Lobby({ onLeave }: { onLeave(): void }) {
   const lobby = useStore(online, (s) => s.lobby);
   const me = useStore(online, (s) => s.me);
   const status = useStore(online, (s) => s.status);
   const [copied, setCopied] = useState(false);
+  const [picking, setPicking] = useState<LobbyPlayer | null>(null);
+  const [stage, setStage] = useState(false);
   if (!lobby) {
     return (
       <div className="screen dim">
@@ -107,6 +112,50 @@ export function Lobby({ onLeave }: { onLeave(): void }) {
         ? 'Waiting for everyone to be ready...'
         : null;
   const link = `${location.origin}${location.pathname}?room=${lobby.code}`;
+  const map = mapById(lobby.settings.mapId);
+  const perTeam = Math.max(1, teamCount(0), teamCount(1));
+
+  if (picking) {
+    // The lobby may have moved on while the select was open; edit the player as they are now.
+    const p = lobby.players.find((x) => x.id === picking.id) ?? picking;
+    return (
+      <CharacterSelect
+        title={p.bot ? `Choose a doodle for ${p.name}` : 'Choose your doodle'}
+        kicker={`${teamStyle(p.team).name} · Room ${lobby.code}`}
+        teamIndex={p.team}
+        value={p.kind}
+        confirmLabel="Done"
+        onBack={() => setPicking(null)}
+        onConfirm={(kind) => {
+          if (p.bot) session.send('updateBot', { id: p.id, kind });
+          else session.send('profile', { kind });
+          setPicking(null);
+        }}
+      />
+    );
+  }
+
+  if (stage) {
+    return (
+      <StageSelect
+        mapId={lobby.settings.mapId}
+        mapSeed={lobby.settings.mapSeed}
+        perTeam={perTeam}
+        readOnly={!isHost}
+        allowRandom={false}
+        confirmLabel="Done"
+        onChange={(mapId, mapSeed) => session.send('settings', { mapId, mapSeed })}
+        onBack={() => setStage(false)}
+        onConfirm={() => setStage(false)}
+      >
+        <TimerPicker
+          value={lobby.settings.turnSeconds}
+          disabled={!isHost}
+          onChange={(turnSeconds) => session.send('settings', { turnSeconds })}
+        />
+      </StageSelect>
+    );
+  }
 
   const copy = async () => {
     try {
@@ -148,7 +197,7 @@ export function Lobby({ onLeave }: { onLeave(): void }) {
               {lobby.players
                 .filter((p) => p.team === t)
                 .map((p) => (
-                  <LobbyRow key={p.id} p={p} me={me} isHost={isHost} />
+                  <LobbyRow key={p.id} p={p} me={me} isHost={isHost} onPick={() => setPicking(p)} />
                 ))}
               <div className="row">
                 {self && self.team !== t && teamCount(t) < MAX_PER_TEAM && (
@@ -166,43 +215,25 @@ export function Lobby({ onLeave }: { onLeave(): void }) {
           ))}
         </div>
 
-        <div className="section-title">Battlefield {isHost ? '' : '(host picks)'}</div>
-        <div className="row">
-          {MAPS.map((m) => (
-            <button
-              key={m.id}
-              className={`btn small ${lobby.settings.mapId === m.id ? 'selected' : ''}`}
-              disabled={!isHost}
-              onClick={() => session.send('settings', { mapId: m.id, mapSeed: null })}
-              title={m.blurb}
-            >
-              {m.name}
-            </button>
-          ))}
-          {isHost && (
-            <button
-              className="btn small"
-              onClick={() => session.send('settings', { mapSeed: Math.floor(Math.random() * 1e9) })}
-            >
-              Remix
-            </button>
-          )}
-        </div>
-        <div className="row" style={{ marginTop: '0.6rem' }}>
-          <span>Turn timer</span>
-          <div className="seg" role="group" aria-label="Turn timer">
-            {TIMERS.map((s) => (
-              <button
-                key={s}
-                disabled={!isHost}
-                className={lobby.settings.turnSeconds === s ? 'on' : ''}
-                onClick={() => session.send('settings', { turnSeconds: s })}
-              >
-                {s === 0 ? 'Off' : `${s}s`}
-              </button>
-            ))}
-          </div>
-        </div>
+        <div className="section-title">Battlefield {isHost ? '' : '(the host picks)'}</div>
+        <button className="lobby-stage" onClick={() => setStage(true)}>
+          <MapCanvas
+            mapId={map.id}
+            seed={lobby.settings.mapSeed}
+            width={240}
+            height={110}
+            perTeam={perTeam}
+          />
+          <span className="lobby-stage-text">
+            <b>{map.name}</b>
+            <span>{map.blurb}</span>
+            <span className="lobby-stage-meta">
+              {lobby.settings.mapSeed !== null ? 'Remixed layout · ' : ''}
+              {lobby.settings.turnSeconds === 0 ? 'No turn timer' : `${lobby.settings.turnSeconds}s turns`}
+            </span>
+            <span className="btn small">{isHost ? 'Change stage' : 'View stage'}</span>
+          </span>
+        </button>
 
         <div className="setup-foot">
           <button className="btn" onClick={onLeave}>
@@ -229,24 +260,50 @@ export function Lobby({ onLeave }: { onLeave(): void }) {
   );
 }
 
-function LobbyRow({ p, me, isHost }: { p: LobbyPlayer; me: string; isHost: boolean }) {
+function LobbyRow({
+  p,
+  me,
+  isHost,
+  onPick,
+}: {
+  p: LobbyPlayer;
+  me: string;
+  isHost: boolean;
+  onPick(): void;
+}) {
   const mine = p.id === me;
   const editable = mine || (isHost && p.bot);
-  const setKind = (kind: (typeof UNIT_KINDS)[number]) =>
-    p.bot ? session.send('updateBot', { id: p.id, kind }) : session.send('profile', { kind });
+  const def = UNITS[p.kind];
   return (
-    <div className={`slot lobby-row ${mine ? 'mine' : ''}`}>
-      <div className="row">
-        <strong>{p.name}</strong>
-        {p.host && <span className="tag">host</span>}
-        {mine && <span className="tag">you</span>}
-        {p.bot && <span className="tag">bot</span>}
-        {!p.bot && !p.connected && <span className="tag warn">reconnecting</span>}
-        {!p.bot && !p.host && (
-          <span className={`tag ${p.ready ? 'ok' : ''}`}>{p.ready ? 'ready' : 'not ready'}</span>
-        )}
+    <div
+      className={`slot-card lobby-row ${mine ? 'mine' : ''}`}
+      style={{ ['--accent' as string]: ROSTER[p.kind].accent }}
+    >
+      <button
+        className="slot-portrait"
+        onClick={onPick}
+        disabled={!editable}
+        title={editable ? 'Change doodle' : def.name}
+      >
+        <img src={unitIconUrl(p.kind, p.team)} alt={def.name} />
+        {editable && <span className="change">Change</span>}
+      </button>
+      <div className="slot-body">
+        <div className="row">
+          <strong className="lobby-name">{p.name}</strong>
+          {p.host && <span className="tag">host</span>}
+          {mine && <span className="tag">you</span>}
+          {p.bot && <span className="tag">bot</span>}
+          {!p.bot && !p.connected && <span className="tag warn">reconnecting</span>}
+          {!p.bot && !p.host && (
+            <span className={`tag ${p.ready ? 'ok' : ''}`}>{p.ready ? 'ready' : 'not ready'}</span>
+          )}
+        </div>
+        <div className="slot-doodle">
+          <b>{def.name}</b> · {def.role}
+        </div>
         {isHost && p.bot && (
-          <>
+          <div className="row">
             <div className="seg" role="group" aria-label="Bot difficulty">
               {LEVELS.map((l) => (
                 <button
@@ -265,30 +322,9 @@ function LobbyRow({ p, me, isHost }: { p: LobbyPlayer; me: string; isHost: boole
             >
               ✕
             </button>
-          </>
+          </div>
         )}
       </div>
-      {editable ? (
-        <div className="kind-picker" role="radiogroup" aria-label="Unit">
-          {UNIT_KINDS.map((k) => (
-            <button
-              key={k}
-              className={`kind-btn ${p.kind === k ? 'selected' : ''}`}
-              onClick={() => setKind(k)}
-              title={UNITS[k].name}
-              role="radio"
-              aria-checked={p.kind === k}
-            >
-              <img src={unitIconUrl(k, p.team)} alt={UNITS[k].name} />
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="row">
-          <img src={unitIconUrl(p.kind, p.team)} alt="" width={48} height={45} />
-          <span className="kind-info">{UNITS[p.kind].name}</span>
-        </div>
-      )}
     </div>
   );
 }

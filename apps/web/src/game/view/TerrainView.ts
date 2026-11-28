@@ -1,5 +1,6 @@
-import { EMPTY, INK, Terrain, type Rect } from '@doodle/sim';
+import { EMPTY, GLUE, INK, Terrain, circleSkipper, type Rect } from '@doodle/sim';
 import type Phaser from 'phaser';
+import { materialFor, type Material, type RGB } from '../art/materials';
 
 const CHUNK = 256;
 /** Each chunk texture overlaps its neighbors by 1px so no seams show at fractional scroll. */
@@ -9,17 +10,25 @@ const TEX = CHUNK + BLEED * 2;
 const EDGE_RANGE = 22;
 const REGION = TEX + EDGE_RANGE * 2;
 
-// Pencil-on-paper palette, as RGBA bytes.
-const OUTLINE = [43, 43, 43, 255];
-const OUTLINE_SOFT = [88, 86, 82, 245];
-const INK_OUTLINE = [19, 40, 111, 255];
+const INK_MAT: Material = {
+  fill: [52, 84, 196],
+  dark: [26, 40, 120],
+  outline: [19, 30, 100],
+  hatch: 0,
+};
+const GLUE_MAT: Material = {
+  fill: [247, 243, 233],
+  dark: [190, 184, 214],
+  outline: [128, 120, 156],
+  hatch: 0,
+};
 
 let nextViewId = 1;
 
 /**
- * Renders the terrain mask as pencil shading, split into 256px chunks so a crater only
- * re-uploads the few chunks it touches. Keeps its own copy of the mask and replays the
- * sim's integer carve operations in step with the shot animation.
+ * Renders the terrain mask in the map's own material (graphite, sticky notes, coffee, ballpoint,
+ * cardboard), split into 256px chunks so a crater only re-uploads the few chunks it touches. Keeps its own
+ * copy of the mask and replays the sim's integer carve and build operations in step with the shot.
  */
 export class TerrainView {
   readonly view: Terrain;
@@ -27,18 +36,24 @@ export class TerrainView {
   private readonly id = nextViewId++;
   private readonly cols: number;
   private readonly rows: number;
+  private readonly material: Material;
   private readonly textures: Phaser.Textures.CanvasTexture[] = [];
   private readonly images: Phaser.GameObjects.Image[] = [];
   private readonly dirty = new Set<number>();
-  /** 1 = graphite smudge, 2 = ink stain, around craters. */
+  /** 1 = graphite smudge, 2 = ink stain, 3 = scorch from a beam, around craters. */
   private readonly scorch: Uint8Array;
   private readonly image: ImageData;
   /** Chamfer distance-to-edge scratch buffer (units of 1/3 px). */
   private readonly dist = new Uint8Array(REGION * REGION);
+  /** Solid pixels since the last empty one above, per pixel of the region, capped. */
+  private readonly below = new Uint8Array(REGION * REGION);
+  /** Empty pixels until the next solid one below, per pixel of the region, capped. */
+  private readonly above = new Uint8Array(REGION * REGION);
 
-  constructor(scene: Phaser.Scene, source: Terrain, depth: number) {
+  constructor(scene: Phaser.Scene, source: Terrain, depth: number, mapId: string) {
     this.scene = scene;
     this.view = source.clone();
+    this.material = materialFor(mapId);
     this.cols = Math.ceil(source.width / CHUNK);
     this.rows = Math.ceil(source.height / CHUNK);
     this.scorch = new Uint8Array(source.width * source.height);
@@ -81,6 +96,18 @@ export class TerrainView {
     this.markDirty({ x0: x - ring, y0: y - ring, x1: x + ring, y1: y + ring });
   }
 
+  /** Same glue fill the sim did, around the same bodies. */
+  build(x: number, y: number, r: number, skip: number[]): void {
+    this.view.fillCircle(x, y, r, GLUE, circleSkipper(skip));
+    const w = this.view.width;
+    for (let yy = Math.max(0, y - r); yy <= Math.min(this.view.height - 1, y + r); yy++) {
+      for (let xx = Math.max(0, x - r); xx <= Math.min(w - 1, x + r); xx++) {
+        if (this.view.data[yy * w + xx] === GLUE) this.scorch[yy * w + xx] = 0;
+      }
+    }
+    this.markDirty({ x0: x - r, y0: y - r, x1: x + r, y1: y + r });
+  }
+
   /** Copies a region from the sim (used after Draw, which the sim already validated). */
   copyFrom(source: Terrain, rect: Rect): void {
     const w = this.view.width;
@@ -116,14 +143,21 @@ export class TerrainView {
     const px = this.image.data;
     const ox = cx * CHUNK - BLEED;
     const oy = cy * CHUNK - BLEED;
+    const mat = this.material;
+    const top = mat.top;
 
     const empty = (x: number, y: number) => x < 0 || x >= w || y < 0 || y >= h || data[y * w + x] === EMPTY;
 
     this.computeEdgeDistance(ox, oy);
+    this.computeColumns(ox, oy);
     const dist = this.dist;
 
     for (let lx = 0; lx < TEX; lx++) {
       const x = ox + lx;
+      // Each column gets its own grass depth and tuft, so the top edge reads as scribbled.
+      const ch = ((x * 2654435761) >>> 0) / 4294967296;
+      const grass = top ? top.depth + Math.floor(ch * 4) : 0;
+      const tuft = top?.tufts && x % 3 === 0 ? 1 + Math.floor(ch * 5) : 0;
       for (let ly = 0; ly < TEX; ly++) {
         const y = oy + ly;
         const o = (ly * TEX + lx) * 4;
@@ -131,12 +165,22 @@ export class TerrainView {
           px[o + 3] = 0;
           continue;
         }
+        const ri = (ly + EDGE_RANGE) * REGION + lx + EDGE_RANGE;
         const v = data[y * w + x];
         if (v === EMPTY) {
-          px[o + 3] = 0;
+          // Grass blades poke up from the map's own ground.
+          const gap = this.above[ri];
+          if (tuft && gap <= tuft && gap > 0 && y + gap < h && data[(y + gap) * w + x] !== EMPTY) {
+            const c = top!.dark;
+            px[o] = c[0];
+            px[o + 1] = c[1];
+            px[o + 2] = c[2];
+            px[o + 3] = 235;
+          } else px[o + 3] = 0;
           continue;
         }
-        const edge = dist[(ly + EDGE_RANGE) * REGION + lx + EDGE_RANGE] / 3;
+        const m = v === INK ? INK_MAT : v === GLUE ? GLUE_MAT : mat;
+        const edge = dist[ri] / 3;
         const hash = ((x * 73856093) ^ (y * 19349663)) >>> 0;
         const grain = ((hash >>> 8) & 15) - 8;
 
@@ -145,7 +189,7 @@ export class TerrainView {
         let b: number;
         let a = 255;
         if (empty(x - 1, y) || empty(x + 1, y) || empty(x, y - 1) || empty(x, y + 1)) {
-          const c = v === INK ? INK_OUTLINE : OUTLINE;
+          const c = m.outline;
           r = c[0];
           g = c[1];
           b = c[2];
@@ -157,21 +201,31 @@ export class TerrainView {
           empty(x - 1, y - 1) ||
           empty(x + 1, y - 1)
         ) {
-          const c = v === INK ? INK_OUTLINE : OUTLINE_SOFT;
-          r = c[0];
-          g = c[1];
-          b = c[2];
-          a = c[3];
+          const c = m.outline;
+          r = (c[0] * 3 + m.fill[0]) >> 2;
+          g = (c[1] * 3 + m.fill[1]) >> 2;
+          b = (c[2] * 3 + m.fill[2]) >> 2;
+        } else if (v === GLUE) {
+          // Glossy glue: lighter toward the top, a shine under the surface.
+          const depth = this.below[ri];
+          const shine = depth > 3 && depth < 7 && (x + (y >> 1)) % 11 < 5 ? 14 : 0;
+          const k = Math.min(1, edge / 10);
+          r = lerp(m.dark[0], m.fill[0], k) + shine + (grain >> 1);
+          g = lerp(m.dark[1], m.fill[1], k) + shine + (grain >> 1);
+          b = lerp(m.dark[2], m.fill[2], k) + shine + (grain >> 1);
         } else if (v === INK) {
-          r = 34 + grain;
-          g = 68 + grain;
-          b = 170 + grain;
+          r = m.fill[0] + grain;
+          g = m.fill[1] + grain;
+          b = m.fill[2] + grain;
+        } else if (top && this.below[ri] <= grass) {
+          // The ground's top band: grass, crust or ink, depending on the map.
+          const c = this.below[ri] <= 2 ? top.dark : top.color;
+          r = c[0] + grain;
+          g = c[1] + grain;
+          b = c[2] + grain;
         } else {
-          const tone = shade(x, y, edge, grain);
-          r = tone + 6;
-          g = tone + 2;
-          b = tone - 8;
-          a = 236;
+          [r, g, b] = shade(m, x, y, edge, grain);
+          a = 242;
         }
 
         const s = this.scorch[y * w + x];
@@ -193,6 +247,33 @@ export class TerrainView {
     const tex = this.textures[cy * this.cols + cx];
     tex.context.putImageData(this.image, 0, 0);
     tex.refresh();
+  }
+
+  /** Per column: how deep each solid pixel is below open air, and how far each open pixel is above ground. */
+  private computeColumns(ox: number, oy: number): void {
+    const t = this.view;
+    const w = t.width;
+    const h = t.height;
+    const data = t.data;
+    const rx = ox - EDGE_RANGE;
+    const ry = oy - EDGE_RANGE;
+    for (let x = 0; x < REGION; x++) {
+      const wx = rx + x;
+      let run = 255;
+      for (let y = 0; y < REGION; y++) {
+        const wy = ry + y;
+        const solid = wx >= 0 && wy >= 0 && wx < w && wy < h && data[wy * w + wx] !== EMPTY;
+        run = solid ? Math.min(255, run + 1) : 0;
+        this.below[y * REGION + x] = run;
+      }
+      let gap = 255;
+      for (let y = REGION - 1; y >= 0; y--) {
+        const wy = ry + y;
+        const solid = wx >= 0 && wy >= 0 && wx < w && wy < h && data[wy * w + wx] !== EMPTY;
+        gap = solid ? 0 : Math.min(255, gap + 1);
+        this.above[y * REGION + x] = gap;
+      }
+    }
   }
 
   /**
@@ -257,13 +338,33 @@ export class TerrainView {
   }
 }
 
-/** Graphite shading: darker along edges, hatched throughout, cross-hatched in the interior. */
-function shade(x: number, y: number, edge: number, grain: number): number {
+function lerp(a: number, b: number, k: number): number {
+  return a + (b - a) * k;
+}
+
+/**
+ * The material's interior: darker toward its edges, hatched throughout, cross-hatched or striped deep
+ * inside, depending on the material.
+ */
+export function shade(m: Material, x: number, y: number, edge: number, grain: number): RGB {
   const rim = Math.max(0, 1 - edge / EDGE_RANGE);
-  let tone = 222 - rim * rim * 42;
-  const diag = (x + y) % 7;
-  if (diag === 0) tone -= 44;
-  else if (diag === 1) tone -= 12;
-  if (edge >= EDGE_RANGE - 1 && (x - y + 7000) % 9 === 0) tone -= 26;
-  return tone + grain;
+  let k = rim * rim * 0.45;
+  if (m.hatch > 0) {
+    const d = (x + y) % m.hatch;
+    if (d === 0) k += 0.32;
+    else if (d === 1) k += 0.1;
+  }
+  if (m.cross && edge >= 6 && (x - y + 7000) % m.cross === 0) k += 0.22;
+  if (m.stripes && x % m.stripes === 0) k += 0.18;
+  if (m.spots) {
+    // Soft stains, like coffee dried on the page.
+    const s = Math.sin(x * 0.021) * Math.cos(y * 0.027) + Math.sin((x + y) * 0.013);
+    if (s > 1.15) k += 0.16;
+  }
+  k = Math.min(1, k);
+  return [
+    lerp(m.fill[0], m.dark[0], k) + grain,
+    lerp(m.fill[1], m.dark[1], k) + grain,
+    lerp(m.fill[2], m.dark[2], k) + grain,
+  ];
 }

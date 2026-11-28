@@ -1,10 +1,7 @@
-import { UNIT_KINDS, type ProjectileSprite, type UnitKind } from '@doodle/sim';
+import type { ProjectileSprite, UnitStatus } from '@doodle/sim';
 import type Phaser from 'phaser';
 import {
-  BARREL_CANVAS,
-  PROJECTILE_SIZE,
-  UNIT_CANVAS,
-  drawBarrel,
+  NEON_BURST,
   drawBurst,
   drawChunk,
   drawCloud,
@@ -14,26 +11,26 @@ import {
   drawPickup,
   PICKUP_SIZE,
   drawMarginDoodle,
-  drawProjectile,
   drawPuff,
   drawScribbleOut,
   drawSplat,
   makeCanvas,
 } from '../art/doodles';
 import { drawDeskTile, drawPaperTile } from '../art/paper';
-import { TEAMS } from '../art/palette';
-import { drawUnitBody } from '../art/doodles';
+import { PROJECTILE_SPRITES, drawProjectile, drawStatus } from '../art/projectiles';
 
-export const BOIL_FRAMES = 3;
 export const BURST_VARIANTS = 3;
 export const DOODLE_VARIANTS = 8;
 
 export const keys = {
-  body: (kind: UnitKind, team: number, frame: number) => `body-${kind}-${team}-${frame}`,
-  barrel: (kind: UnitKind) => `barrel-${kind}`,
   projectile: (sprite: ProjectileSprite) => `proj-${sprite}`,
+  status: (status: UnitStatus) => `status-${status}`,
   burst: (i: number) => `burst-${i}`,
+  neon: (i: number) => `neon-${i}`,
   splat: (i: number) => `splat-${i}`,
+  glue: (i: number) => `gluesplat-${i}`,
+  gluedot: 'gluedot',
+  neondot: 'neondot',
   doodle: (i: number) => `doodle-${i}`,
   paper: (style: string) => `paper-${style}`,
   desk: 'desk',
@@ -57,18 +54,6 @@ export const keys = {
 export const CLOUD_VARIANTS = 3;
 export const CHUNK_VARIANTS = 3;
 
-const PROJECTILE_SPRITES: ProjectileSprite[] = [
-  'graphite',
-  'lead',
-  'drill',
-  'ink',
-  'inkDrop',
-  'dart',
-  'crumple',
-  'staple',
-  'band',
-];
-
 function add(scene: Phaser.Scene, key: string, canvas: HTMLCanvasElement): void {
   if (scene.textures.exists(key)) scene.textures.remove(key);
   scene.textures.addCanvas(key, canvas);
@@ -76,24 +61,9 @@ function add(scene: Phaser.Scene, key: string, canvas: HTMLCanvasElement): void 
 
 /** Draws every procedural texture once at boot. */
 export function registerTextures(scene: Phaser.Scene): void {
-  for (const kind of UNIT_KINDS) {
-    for (let t = 0; t < TEAMS.length; t++) {
-      for (let f = 0; f < BOIL_FRAMES; f++) {
-        const c = makeCanvas(UNIT_CANVAS.w, UNIT_CANVAS.h);
-        drawUnitBody(c, kind, t, 11 + f * 7);
-        add(scene, keys.body(kind, t, f), c);
-      }
-    }
-    const b = makeCanvas(BARREL_CANVAS.w, BARREL_CANVAS.h);
-    drawBarrel(b, kind, 5);
-    add(scene, keys.barrel(kind), b);
-  }
-
-  for (const sprite of PROJECTILE_SPRITES) {
-    const c = makeCanvas(PROJECTILE_SIZE, PROJECTILE_SIZE);
-    drawProjectile(c, sprite, 3);
-    add(scene, keys.projectile(sprite), c);
-  }
+  for (const sprite of PROJECTILE_SPRITES) add(scene, keys.projectile(sprite), drawProjectile(sprite));
+  for (const status of ['inked', 'rooted', 'marked'] as const)
+    add(scene, keys.status(status), drawStatus(status));
 
   for (let i = 0; i < BURST_VARIANTS; i++) {
     const c = makeCanvas(128, 128);
@@ -102,7 +72,38 @@ export function registerTextures(scene: Phaser.Scene): void {
     const s = makeCanvas(128, 128);
     drawSplat(s, 3 + i * 4);
     add(scene, keys.splat(i), s);
+    const n = makeCanvas(128, 128);
+    drawBurst(n, 4 + i * 7, NEON_BURST);
+    add(scene, keys.neon(i), n);
+    const g = makeCanvas(128, 128);
+    drawSplat(g, 5 + i * 3, '#f8f4ea', '#8f8aa6');
+    add(scene, keys.glue(i), g);
   }
+  add(
+    scene,
+    keys.gluedot,
+    simpleShape(9, 9, (ctx) => {
+      ctx.fillStyle = '#f8f4ea';
+      ctx.strokeStyle = '#8f8aa6';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(4.5, 4.5, 3.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }),
+  );
+  add(
+    scene,
+    keys.neondot,
+    simpleShape(8, 8, (ctx) => {
+      ctx.fillStyle = '#e4ff4d';
+      ctx.shadowColor = '#e4ff4d';
+      ctx.shadowBlur = 3;
+      ctx.beginPath();
+      ctx.arc(4, 4, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }),
+  );
 
   for (let i = 0; i < DOODLE_VARIANTS; i++) {
     const c = makeCanvas(i === 3 || i === 5 ? 140 : 80, 80);

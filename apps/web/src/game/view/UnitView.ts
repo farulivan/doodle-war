@@ -1,15 +1,18 @@
-import type { Unit } from '@doodle/sim';
+import { UNITS, type Unit, type UnitStatus } from '@doodle/sim';
 import Phaser from 'phaser';
-import { BARREL_CANVAS, BARREL_PIVOT, UNIT_CANVAS } from '../art/doodles';
+import { DESIGNS } from '../art/characters';
 import { INK, team } from '../art/palette';
+import { BOIL_FRAMES, type Design, type Mood, type PartDef, type RigInput } from '../art/rig';
 import { settings } from '../settings';
-import { BOIL_FRAMES, keys } from './textures';
+import { RIG_RES, frameKey, rigAtlas, type RigAtlas } from './rigTextures';
+import { keys } from './textures';
 
 export const DEPTH = {
   desk: 0,
   paper: 1,
-  decor: 2,
-  cloud: 3,
+  backdrop: 2,
+  decor: 3,
+  cloud: 4,
   terrain: 10,
   trail: 15,
   unit: 20,
@@ -19,34 +22,56 @@ export const DEPTH = {
   guide: 55,
 };
 
-const BAR_W = 46;
-const BAR_H = 6;
+const BAR_W = 50;
+const BAR_H = 7;
 /** A shape per team so teams read without relying on color alone. */
 export const TEAM_GLYPH = ['●', '▲', '■', '◆'];
 
-/** One unit on the battlefield: boiling doodle body, aimable barrel, name tag and HP bar. */
+/** How long a passing mood lasts before the doodle settles back. */
+const MOOD_SECONDS: Partial<Record<Mood, number>> = { fire: 0.55, hurt: 0.65 };
+
+interface PartNode {
+  def: PartDef;
+  box: Phaser.GameObjects.Container;
+  image: Phaser.GameObjects.Image;
+  frame: string;
+}
+
+/**
+ * One doodle on the battlefield: a rig of parts posed every frame from its mood, aim, charge and the wind,
+ * plus its name tag, health bar and status icons.
+ */
 export class UnitView {
   readonly id: number;
   readonly container: Phaser.GameObjects.Container;
   private readonly scene: Phaser.Scene;
-  /** Inner container that bobs and squashes without moving the unit's real position. */
+  /** Flips with facing; the outer container tilts with the ground. */
   private readonly rig: Phaser.GameObjects.Container;
-  private readonly body: Phaser.GameObjects.Image;
-  private readonly barrel: Phaser.GameObjects.Image;
-  private readonly inkMark: Phaser.GameObjects.Image;
+  private readonly nodes = new Map<string, PartNode>();
+  private readonly design: Design;
+  private readonly atlas: RigAtlas;
   private readonly label: Phaser.GameObjects.Text;
   private readonly bar: Phaser.GameObjects.Graphics;
   private readonly marker: Phaser.GameObjects.Text;
+  private readonly statusIcons = new Map<UnitStatus, Phaser.GameObjects.Image>();
   private readonly unit: Unit;
-  private frame = 0;
+  private readonly seed: number;
+  private time = Math.random() * 10;
+  private boil = 0;
   private boilTimer = 0;
   private bob = 0;
-  private walkTime = 0;
-  /** How recently the unit moved; drives the walk bounce. */
+  /** How recently the unit moved; walking shows while it's above zero. */
   private movingFor = 0;
-  private time = Math.random() * 10;
   private shownHp: number;
   private targetHp: number;
+  private baseMood: Mood = 'idle';
+  private passing: { mood: Mood; until: number } | null = null;
+  private moodStart = 0;
+  private lastMood: Mood = 'idle';
+  private power = 0;
+  private look: { x: number; y: number } | null = null;
+  private wind = 0;
+  private statuses: Record<UnitStatus, boolean> = { inked: false, rooted: false, marked: false };
   facing: 1 | -1 = 1;
   angle = 45;
   dead = false;
@@ -55,42 +80,73 @@ export class UnitView {
     this.scene = scene;
     this.unit = unit;
     this.id = unit.id;
+    this.seed = unit.id * 1.37 + 0.5;
     this.shownHp = unit.hp;
     this.targetHp = unit.hp;
+    this.design = DESIGNS[unit.kind];
+    this.atlas = rigAtlas(scene, unit.kind);
 
-    this.barrel = scene.add.image(0, 0, keys.barrel(unit.kind));
-    this.body = scene.add.image(0, 0, keys.body(unit.kind, unit.team, 0));
-    this.body.setOrigin(UNIT_CANVAS.footX / UNIT_CANVAS.w, UNIT_CANVAS.footY / UNIT_CANVAS.h);
-    this.inkMark = scene.add.image(0, -18, keys.inkmark).setVisible(false).setAlpha(0.9);
-    this.rig = scene.add.container(0, 0, [this.barrel, this.body, this.inkMark]);
+    this.rig = scene.add.container(0, 0);
     this.container = scene.add.container(unit.x, unit.y, [this.rig]).setDepth(DEPTH.unit);
+    const tint = team(unit.team).hex;
+    const build = (def: PartDef, parentPivot: readonly [number, number]): Phaser.GameObjects.Container => {
+      const rendered = this.atlas.rig.parts.get(def.name)!;
+      const [x0, y0, x1, y1] = def.box;
+      const image = scene.add
+        .image(0, 0, this.atlas.key, frameKey(def.name, rendered.first, 0))
+        .setOrigin((def.pivot[0] - x0) / (x1 - x0), (def.pivot[1] - y0) / (y1 - y0))
+        .setScale(1 / RIG_RES);
+      if (def.team) image.setTint(tint);
+      const box = scene.add.container(def.pivot[0] - parentPivot[0], def.pivot[1] - parentPivot[1]);
+      const kids = this.atlas.rig.children.get(def.name) ?? [];
+      for (const k of kids) if (k.behind) box.add(build(k, def.pivot));
+      box.add(image);
+      for (const k of kids) if (!k.behind) box.add(build(k, def.pivot));
+      this.nodes.set(def.name, { def, box, image, frame: rendered.first });
+      return box;
+    };
+    for (const def of this.atlas.rig.children.get('') ?? []) this.rig.add(build(def, [0, 0]));
 
     const t = team(unit.team);
+    const res = Math.min(2, window.devicePixelRatio || 1) * 1.5;
     this.label = scene.add
-      .text(unit.x, unit.y - 54, `${TEAM_GLYPH[unit.team % TEAM_GLYPH.length]} ${unit.name}`, {
+      .text(unit.x, unit.y - 60, `${TEAM_GLYPH[unit.team % TEAM_GLYPH.length]} ${unit.name}`, {
         fontFamily: '"Patrick Hand", cursive',
         fontSize: '17px',
         color: t.color,
         stroke: '#fffdf6',
-        strokeThickness: 4,
+        strokeThickness: 5,
+        resolution: res,
       })
       .setOrigin(0.5, 1)
       .setDepth(DEPTH.label);
     this.bar = scene.add.graphics().setDepth(DEPTH.label);
     this.marker = scene.add
-      .text(unit.x, unit.y - 76, '↓', {
+      .text(unit.x, unit.y - 84, '▼', {
         fontFamily: '"Permanent Marker", cursive',
-        fontSize: '28px',
+        fontSize: '24px',
         color: t.color,
         stroke: '#fffdf6',
-        strokeThickness: 4,
+        strokeThickness: 5,
+        resolution: res,
       })
       .setOrigin(0.5, 1)
       .setDepth(DEPTH.label)
       .setVisible(false);
+    for (const s of ['inked', 'rooted', 'marked'] as const) {
+      this.statusIcons.set(
+        s,
+        scene.add
+          .image(0, 0, keys.status(s))
+          .setScale(1 / 3)
+          .setDepth(DEPTH.label)
+          .setVisible(false),
+      );
+    }
 
-    this.boilTimer = Math.random() * 160;
+    this.boilTimer = Math.random() * 120;
     this.setPose(unit.x, unit.y, unit.tilt, unit.facing, unit.angle);
+    this.applyPose(0);
     this.drawBar();
   }
 
@@ -102,25 +158,18 @@ export class UnitView {
     return this.container.y;
   }
 
+  /** Top of the doodle's head, for floating text. */
+  get headY(): number {
+    return this.container.y + this.design.frame[1];
+  }
+
   setPose(x: number, y: number, tilt: number, facing: 1 | -1, angle: number): void {
-    if (x !== this.container.x) this.movingFor = 140;
+    if (x !== this.container.x) this.movingFor = 150;
     this.container.setPosition(x, y);
     this.container.setRotation(tilt);
     this.facing = facing;
     this.angle = angle;
-    this.body.setFlipX(facing === -1);
-    const pivot = BARREL_PIVOT[this.unit.kind];
-    this.barrel.setPosition(pivot.x * facing, pivot.y);
-    const pivotX = 2 / BARREL_CANVAS.w;
-    if (facing === 1) {
-      this.barrel.setFlipX(false).setOrigin(pivotX, 0.5).setRotation(-Phaser.Math.DegToRad(angle));
-    } else {
-      this.barrel
-        .setFlipX(true)
-        .setOrigin(1 - pivotX, 0.5)
-        .setRotation(Phaser.Math.DegToRad(angle));
-    }
-    this.inkMark.setFlipX(facing === -1);
+    this.rig.setScale(facing, 1);
     this.placeLabels();
   }
 
@@ -129,20 +178,64 @@ export class UnitView {
     this.placeLabels();
   }
 
+  setXY(x: number, y: number): void {
+    this.container.setPosition(x, y);
+    this.placeLabels();
+  }
+
   private placeLabels(): void {
     const x = this.container.x;
     const y = this.container.y;
-    this.label.setPosition(x, y - 46);
-    this.marker.setPosition(x, y - 70 + Math.sin(this.bob) * 4);
+    const top = y + this.design.frame[1];
+    this.label.setPosition(x, top - 14);
+    this.marker.setPosition(x, top - 36 + Math.sin(this.bob) * 4);
+    let ix = x + BAR_W / 2 + 10;
+    for (const [s, icon] of this.statusIcons) {
+      const on = this.statuses[s] && !this.dead;
+      icon.setVisible(on);
+      if (on) {
+        icon.setPosition(ix, top - 6.5);
+        ix += 17;
+      }
+    }
     this.drawBar();
   }
 
+  /** The doodle whose turn it is aims; the rest idle. */
   setActive(active: boolean): void {
     this.marker.setVisible(active && !this.dead);
+    this.baseMood = active ? 'aim' : 'idle';
   }
 
-  setInked(inked: boolean): void {
-    this.inkMark.setVisible(inked && !this.dead);
+  setCharge(power: number): void {
+    this.power = power;
+    if (power > 0 && this.baseMood === 'aim') this.baseMood = 'charge';
+    else if (power <= 0 && this.baseMood === 'charge') this.baseMood = 'aim';
+  }
+
+  /** Where to look, in the world, or null for along the aim. */
+  setLook(x: number | null, y?: number): void {
+    this.look = x === null ? null : { x, y: y ?? 0 };
+  }
+
+  /** Wind across the page, in px/s². */
+  setWind(ax: number): void {
+    this.wind = Math.max(-1, Math.min(1, ax / 160));
+  }
+
+  setFalling(falling: boolean): void {
+    if (falling) this.passing = { mood: 'fly', until: Infinity };
+    else if (this.passing?.mood === 'fly') this.passing = null;
+  }
+
+  setStatus(status: UnitStatus, on: boolean): void {
+    this.statuses[status] = on;
+    this.placeLabels();
+  }
+
+  setStatuses(u: Unit): void {
+    this.statuses = { inked: u.inked > 0, rooted: u.rooted > 0, marked: u.marked };
+    this.placeLabels();
   }
 
   setHp(hp: number): void {
@@ -155,63 +248,62 @@ export class UnitView {
     this.drawBar();
   }
 
-  recoil(): void {
-    const dx = -this.facing * 4;
-    this.scene.tweens.add({
-      targets: this.barrel,
-      x: this.barrel.x + dx,
-      duration: 70,
-      yoyo: true,
-      ease: 'Quad.easeOut',
-    });
-    this.scene.tweens.add({
-      targets: this.rig,
-      scaleX: 1.08,
-      scaleY: 0.92,
-      duration: 70,
-      yoyo: true,
-      ease: 'Quad.easeOut',
-    });
+  private pass(mood: Mood): void {
+    this.passing = { mood, until: this.time + (MOOD_SECONDS[mood] ?? 0.6) };
   }
 
-  /** Flash and shake when hit. */
+  /** The shot left the barrel. */
+  recoil(): void {
+    this.pass('fire');
+  }
+
+  /** Flash and wince when hit. */
   flinch(strength = 1): void {
     if (this.dead) return;
-    this.body.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
-    this.scene.time.delayedCall(70, () => this.body.setTint(0xff8a80).setTintMode(Phaser.TintModes.MULTIPLY));
-    this.scene.time.delayedCall(190, () => this.body.clearTint());
-    const amp = 3 * strength;
-    this.scene.tweens.add({
-      targets: this.rig,
-      x: { from: -amp, to: amp },
-      duration: 45,
-      yoyo: true,
-      repeat: 3,
-      onComplete: () => this.rig.setX(0),
+    this.pass('hurt');
+    for (const n of this.nodes.values())
+      if (!n.def.team) n.image.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
+    this.scene.time.delayedCall(60, () => {
+      for (const n of this.nodes.values())
+        if (!n.def.team) n.image.setTint(0xff9a8a).setTintMode(Phaser.TintModes.MULTIPLY);
     });
+    this.scene.time.delayedCall(200, () => {
+      for (const n of this.nodes.values()) if (!n.def.team) n.image.clearTint();
+    });
+    if (strength > 1.2 && !settings.get().reducedMotion) {
+      this.scene.tweens.add({
+        targets: this.rig,
+        scaleY: 0.86,
+        duration: 70,
+        yoyo: true,
+        ease: 'Quad.easeOut',
+      });
+    }
   }
 
-  /** Little victory hops. */
+  /** Victory hops until the match is cleared. */
   celebrate(): void {
     if (this.dead) return;
-    this.scene.tweens.add({
-      targets: this.rig,
-      y: -14,
-      duration: 220,
-      yoyo: true,
-      repeat: -1,
-      repeatDelay: 260,
-      ease: 'Quad.easeOut',
-    });
+    this.baseMood = 'victory';
+    this.passing = null;
+  }
+
+  private mood(): Mood {
+    if (this.dead) return 'dead';
+    if (this.passing && this.time < this.passing.until) return this.passing.mood;
+    this.passing = null;
+    if (this.baseMood === 'idle' && this.movingFor > 0) return 'walk';
+    if ((this.baseMood === 'aim' || this.baseMood === 'charge') && this.movingFor > 0) return 'walk';
+    return this.baseMood;
   }
 
   update(dtMs: number): void {
     this.time += dtMs / 1000;
+    const calm = settings.get().reducedMotion;
     this.boilTimer += dtMs;
-    if (this.boilTimer > 160) {
+    if (this.boilTimer > 125) {
       this.boilTimer = 0;
-      this.frame = (this.frame + 1) % BOIL_FRAMES;
-      this.body.setTexture(keys.body(this.unit.kind, this.unit.team, this.frame));
+      this.boil = calm ? 0 : (this.boil + 1) % BOIL_FRAMES;
     }
     if (this.shownHp !== this.targetHp) {
       const diff = this.targetHp - this.shownHp;
@@ -220,21 +312,54 @@ export class UnitView {
       this.drawBar();
     }
     this.bob += dtMs / 140;
-    this.marker.setPosition(this.container.x, this.container.y - 70 + Math.sin(this.bob) * 4);
-
-    if (this.dead || settings.get().reducedMotion) return;
-    // Walk bounce while moving, slow breathing while idle.
+    this.marker.setPosition(
+      this.container.x,
+      this.container.y + this.design.frame[1] - 36 + Math.sin(this.bob) * 4,
+    );
     this.movingFor = Math.max(0, this.movingFor - dtMs);
-    if (this.movingFor > 0) {
-      this.walkTime += dtMs / 1000;
-      this.body.y = -Math.abs(Math.sin(this.walkTime * 16)) * 2.6;
-      this.body.rotation = Math.sin(this.walkTime * 16) * 0.05;
-      this.body.setScale(1, 1);
-    } else {
-      this.body.y *= 0.8;
-      this.body.rotation *= 0.8;
-      const breathe = Math.sin(this.time * 2.4) * 0.018;
-      this.body.setScale(1 - breathe * 0.5, 1 + breathe);
+    this.applyPose(dtMs);
+  }
+
+  private applyPose(_dtMs: number): void {
+    const mood = this.mood();
+    if (mood !== this.lastMood) {
+      this.lastMood = mood;
+      this.moodStart = this.time;
+    }
+    let look: [number, number] | null = null;
+    if (this.look) {
+      // Into the rig's own space: unflipped and untilted.
+      const dx = this.look.x - this.container.x;
+      const dy = this.look.y - (this.container.y - 22);
+      const c = Math.cos(-this.container.rotation);
+      const s = Math.sin(-this.container.rotation);
+      look = [(dx * c - dy * s) * this.facing, dx * s + dy * c];
+    }
+    const input: RigInput = {
+      t: this.time,
+      mood,
+      moodT: this.time - this.moodStart,
+      aim: this.angle,
+      look,
+      power: this.power / 100,
+      wind: this.wind * -this.facing,
+      lowHp: this.targetHp < this.unit.maxHp * 0.25,
+      seed: this.seed,
+      calm: settings.get().reducedMotion,
+    };
+    const pose = this.design.pose(input);
+    for (const [name, node] of this.nodes) {
+      const p = pose[name] ?? {};
+      const def = node.def;
+      const parent = def.parent ? this.nodes.get(def.parent)!.def.pivot : ([0, 0] as const);
+      node.box.setPosition(def.pivot[0] - parent[0] + (p.x ?? 0), def.pivot[1] - parent[1] + (p.y ?? 0));
+      node.box.setRotation(p.rot ?? 0);
+      node.box.setScale(p.sx ?? 1, p.sy ?? 1);
+      node.box.setVisible(p.show !== false);
+      node.box.setAlpha(p.alpha ?? 1);
+      const frame = p.frame ?? node.frame;
+      const variants = this.atlas.rig.parts.get(name)!.frames.get(frame)?.length ?? 1;
+      node.image.setFrame(frameKey(name, frame, this.boil % variants));
     }
   }
 
@@ -243,22 +368,28 @@ export class UnitView {
     g.clear();
     if (this.dead) return;
     const x = this.container.x - BAR_W / 2;
-    const y = this.container.y - 44;
+    const y = this.container.y + this.design.frame[1] - 10;
     const frac = Math.max(0, Math.min(1, this.shownHp / this.unit.maxHp));
-    g.fillStyle(0xfffdf6, 0.95);
-    g.fillRect(x, y, BAR_W, BAR_H);
-    const color = frac > 0.5 ? team(this.unit.team).hex : frac > 0.25 ? 0xe0a31e : 0xc0392b;
-    g.fillStyle(color, 1);
-    g.fillRect(x + 1, y + 1, (BAR_W - 2) * frac, BAR_H - 2);
-    g.lineStyle(1.5, Phaser.Display.Color.HexStringToColor(INK).color, 1);
-    g.strokeRect(x, y, BAR_W, BAR_H);
+    const ink = Phaser.Display.Color.HexStringToColor(INK).color;
+    g.fillStyle(0x000000, 0.18);
+    g.fillRoundedRect(x + 1.5, y + 2, BAR_W, BAR_H, 3.5);
+    g.fillStyle(0xfffdf6, 1);
+    g.fillRoundedRect(x, y, BAR_W, BAR_H, 3.5);
+    const color = frac > 0.5 ? team(this.unit.team).hex : frac > 0.25 ? 0xe0a31e : 0xd2402f;
+    if (frac > 0) {
+      g.fillStyle(color, 1);
+      g.fillRoundedRect(x + 1.5, y + 1.5, Math.max(3, (BAR_W - 3) * frac), BAR_H - 3, 2);
+    }
+    g.lineStyle(1.8, ink, 1);
+    g.strokeRoundedRect(x, y, BAR_W, BAR_H, 3.5);
   }
 
   die(cause: 'hp' | 'fell'): void {
     if (this.dead) return;
     this.dead = true;
+    this.passing = null;
     this.marker.setVisible(false);
-    this.inkMark.setVisible(false);
+    for (const icon of this.statusIcons.values()) icon.setVisible(false);
     this.bar.clear();
     this.scene.tweens.killTweensOf(this.rig);
     if (cause === 'fell') {
@@ -267,16 +398,16 @@ export class UnitView {
     }
     // An eraser scrubs the doodle out, then its ghost floats away.
     const cx = this.container.x;
-    const cy = this.container.y - 16;
+    const cy = this.container.y - 20;
     const eraser = this.scene.add
-      .image(cx - 16, cy - 4, keys.eraser)
+      .image(cx - 18, cy - 4, keys.eraser)
       .setDepth(DEPTH.fx)
       .setAngle(-20)
       .setAlpha(0);
     this.scene.tweens.add({ targets: eraser, alpha: 1, duration: 120 });
     this.scene.tweens.add({
       targets: eraser,
-      x: cx + 16,
+      x: cx + 18,
       duration: 140,
       yoyo: true,
       repeat: 3,
@@ -293,9 +424,7 @@ export class UnitView {
       quantity: 2,
     });
     crumbs.setDepth(DEPTH.fx);
-    this.body.setTint(0x9a9a9a);
-    this.barrel.setTint(0x9a9a9a);
-    this.scene.tweens.add({ targets: [this.container, this.label], alpha: 0, delay: 250, duration: 900 });
+    this.scene.tweens.add({ targets: [this.container, this.label], alpha: 0, delay: 350, duration: 900 });
     this.scene.time.delayedCall(1150, () => {
       crumbs.stop();
       this.scene.tweens.add({
@@ -331,5 +460,11 @@ export class UnitView {
     this.label.destroy();
     this.bar.destroy();
     this.marker.destroy();
+    for (const icon of this.statusIcons.values()) icon.destroy();
   }
+}
+
+/** The barrel's reach, for the aim guide. */
+export function barrelReach(u: Unit): number {
+  return UNITS[u.kind].mount.length;
 }

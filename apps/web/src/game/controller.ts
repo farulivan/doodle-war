@@ -8,6 +8,8 @@ import {
   applyPickup,
   beginTurn,
   canUseSpecial,
+  circleSkipper,
+  GLUE,
   clampAngle,
   createMatch,
   drawLine,
@@ -42,6 +44,7 @@ import { botPlanner } from './botPlanner';
 import { recordMatch } from './profile';
 import { hud, initialHud, type ActiveInfo, type MatchSummary, type QueueEntry } from './store';
 import { BattleScene } from './view/BattleScene';
+import { DPR } from './view/dpr';
 import { registerTextures } from './view/textures';
 
 const POWER_RATE = 62;
@@ -114,14 +117,22 @@ class GameController {
         document.fonts.load('20px "Patrick Hand"'),
       ]).catch(() => undefined);
       await new Promise<void>((resolve) => {
+        // The canvas renders at the screen's pixel density and is shown at CSS size, so the doodles stay
+        // sharp on high-DPI screens. Phaser 4 has no setting for this, so the size is kept by hand.
+        const size = () => [Math.max(1, parent.clientWidth) * DPR, Math.max(1, parent.clientHeight) * DPR];
+        const [w, h] = size();
         this.game = new Phaser.Game({
           type: Phaser.WEBGL,
           parent,
           backgroundColor: '#6b4a2f',
-          scale: { mode: Phaser.Scale.RESIZE, width: '100%', height: '100%' },
-          render: { antialias: true },
+          scale: { mode: Phaser.Scale.NONE, width: w, height: h, zoom: 1 / DPR },
+          render: { antialias: true, mipmapFilter: 'LINEAR_MIPMAP_LINEAR' },
           input: { mouse: { preventDefaultWheel: true } },
           banner: false,
+        });
+        window.addEventListener('resize', () => {
+          const [nw, nh] = size();
+          this.game?.scale.resize(nw, nh);
         });
         this.game.events.once('ready', () => {
           const scene = new BattleScene();
@@ -250,11 +261,16 @@ class GameController {
     const scene = this.scene!;
     this.resetTurnInput();
     this.slowed = state.turn.moveLeft < UNITS[actor.kind].moveBudget;
-    if (this.slowed && this.mode !== 'demo') this.toast(`${actor.name} is inked: half movement`);
+    if (this.mode !== 'demo') {
+      if (state.turn.moveLeft === 0) this.toast(`${actor.name} is stuck in glue: no walking this turn`);
+      else if (this.slowed) this.toast(`${actor.name} is inked: half movement`);
+    }
     scene.syncUnits(state);
     const dropped = scene.syncPickups(state.pickups, true);
     if (dropped.length && this.mode !== 'demo')
-      this.toast(`A ${PICKUP_INFO[dropped[0]].name} floated down! Walk over it to grab it.`);
+      this.toast(
+        `${/^[AEIOU]/.test(PICKUP_INFO[dropped[0]].name) ? 'An' : 'A'} ${PICKUP_INFO[dropped[0]].name} floated down! Walk over it to grab it.`,
+      );
     scene.setActive(actor.id);
     scene.setWind(state.turn.wind.ax);
     scene.releaseManualCamera();
@@ -377,7 +393,15 @@ class GameController {
     }
     if (this.bot) this.updateBot(dt, actor);
     else if (hud.get().phase === 'aim') this.updateHuman(dt, actor);
+    this.showAim(actor);
     this.publish(false);
+  }
+
+  /** The aiming doodle's face follows its charge, and the guide its weapon. */
+  private showAim(actor: Unit): void {
+    const scene = this.scene!;
+    scene.aimSlot = this.slot;
+    scene.setCharge(actor.id, this.charging ? this.power : 0);
   }
 
   private updateHuman(dt: number, actor: Unit): void {
@@ -412,10 +436,10 @@ class GameController {
         const res = moveActive(state, dir, px);
         if (this.mode === 'online' && send > 0) session.send('move', { dir, px: send });
         this.showCollected(res);
-        if (res.fall) {
+        if (res.fall || res.glide) {
           this.busy = true;
           const token = this.matchToken;
-          void scene.animateWalkFall(actor, res.fall.fromY, res.fall.toY, res.fall.dead).then(() => {
+          void this.animateMoveFall(actor, res).then(() => {
             if (token !== this.matchToken) return;
             this.busy = false;
             if (res.turnEnded) this.afterTurn();
@@ -488,10 +512,10 @@ class GameController {
           const res = moveActive(state, dir, px);
           bot.moved += px;
           this.showCollected(res);
-          if (res.fall) {
+          if (res.fall || res.glide) {
             this.busy = true;
             const token = this.matchToken;
-            void scene.animateWalkFall(actor, res.fall.fromY, res.fall.toY, res.fall.dead).then(() => {
+            void this.animateMoveFall(actor, res).then(() => {
               if (token !== this.matchToken) return;
               this.busy = false;
               if (res.turnEnded) this.afterTurn();
@@ -545,6 +569,16 @@ class GameController {
         break;
       }
     }
+  }
+
+  /** A walk that ended in a glide, a drop, or both. */
+  private animateMoveFall(actor: Unit, res: MoveResult): Promise<void> {
+    const scene = this.scene!;
+    if (res.glide) {
+      return scene.animateGlide(actor, res.glide, res.fall ? res.fall.toY : null, !!res.fall?.dead);
+    }
+    const fall = res.fall!;
+    return scene.animateWalkFall(actor, fall.fromY, fall.toY, fall.dead);
   }
 
   private showCollected(res: MoveResult): void {
@@ -836,6 +870,7 @@ class GameController {
     } else if (phase === 'bot' && this.timer !== null) {
       this.timer = Math.max(0, this.timer - dt / 1000);
     }
+    if (!this.busy) this.showAim(actor);
     this.publish(false);
   }
 
@@ -956,7 +991,16 @@ class GameController {
             state.pickups = state.pickups.filter((p) => p.id !== c.pickupId);
             this.scene?.collectPickup(c.pickupId, c.kind);
           }
-          if (msg.hop) {
+          if (msg.glide) {
+            const glide = msg.glide;
+            if (msg.fall?.dead) {
+              u.alive = false;
+              u.hp = 0;
+            }
+            void this.runBusy(() =>
+              this.scene!.animateGlide(u, glide, msg.fall ? msg.fall.toY : null, !!msg.fall?.dead),
+            );
+          } else if (msg.hop) {
             const h = msg.hop;
             if (msg.fall?.dead) {
               u.alive = false;
@@ -1013,6 +1057,7 @@ class GameController {
           // Keep the mirror terrain in step so walking prediction stays exact.
           for (const e of msg.result.events) {
             if (e.type === 'carve') state.terrain.carveCircle(e.x, e.y, e.radius);
+            if (e.type === 'build') state.terrain.fillCircle(e.x, e.y, e.radius, GLUE, circleSkipper(e.skip));
             if (e.type === 'pickup') state.pickups = state.pickups.filter((p) => p.id !== e.pickupId);
             if (e.type === 'pickupFall') {
               const p = state.pickups.find((x) => x.id === e.pickupId);
@@ -1109,7 +1154,9 @@ class GameController {
             special: actor.special,
             drawUsed: actor.drawUsed,
             lastPower: actor.lastPower,
-            inked: this.slowed,
+            inked: this.slowed && state.turn.moveLeft > 0,
+            rooted: actor.rooted > 0 || (state.turn.moveLeft === 0 && state.turn.moveUsed === 0),
+            marked: actor.marked,
           }
         : null;
       patch.active = active;

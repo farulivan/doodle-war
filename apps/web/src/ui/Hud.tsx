@@ -1,12 +1,13 @@
 import { UNITS, type WeaponSlot } from '@doodle/sim';
 import { useEffect, useState } from 'react';
-import { unitIconUrl } from '../game/art/doodles';
+import { unitIconUrl } from '../game/art/portrait';
 import { team } from '../game/art/palette';
 import { audio } from '../game/audio';
 import { controller, type Control } from '../game/controller';
 import { settings } from '../game/settings';
 import { hud, useStore, type QueueEntry } from '../game/store';
 import { CoachMarks } from './CoachMarks';
+import { shotIconUrl } from './LivePortrait';
 import { SettingsPanel } from './SettingsPanel';
 
 /** Touch controls show on touch screens, or anywhere with ?touch in the URL. */
@@ -190,31 +191,57 @@ function Panel() {
   const specialReady = active.special >= 100;
   const frac = active.hp / active.maxHp;
 
+  const statuses = [
+    active.inked && { key: 'inked', label: 'Inked: half movement', cls: 'ink' },
+    active.rooted && { key: 'rooted', label: 'Stuck: no walking', cls: 'glue' },
+    active.marked && { key: 'marked', label: 'Highlighted: next hit +35%', cls: 'mark' },
+  ].filter(Boolean) as { key: string; label: string; cls: string }[];
+
   return (
     <div className={`panel sheet interactive ${myTurn ? '' : 'waiting'}`}>
       <div className="who">
-        <img src={unitIconUrl(active.kind, active.team)} alt="" />
-        <div>
+        <div className="who-portrait" style={{ borderColor: team(active.team).color }}>
+          <img src={unitIconUrl(active.kind, active.team)} alt="" />
+        </div>
+        <div className="who-text">
           <div className="name" style={{ color: team(active.team).color }}>
             {active.name}
           </div>
-          <div className="kind-label" style={{ fontSize: '0.8rem', color: 'var(--ink-soft)' }}>
-            {active.controller === 'bot' ? (soloHuman ? 'Bot (enemy)' : 'Bot') : def.name}
+          <div className="kind-label">
+            {active.controller === 'bot' ? (soloHuman ? 'Bot (enemy)' : 'Bot') : def.name} · {def.role}
           </div>
-          <div className="hp-bar" aria-label={`${active.hp} HP`}>
-            <i style={{ width: `${frac * 100}%`, background: hpColor(frac, active.team) }} />
+          <div className="hp-row">
+            <div className="hp-bar" aria-label={`${active.hp} HP`}>
+              <i style={{ width: `${frac * 100}%`, background: hpColor(frac, active.team) }} />
+            </div>
+            <span className="hp-num">{active.hp}</span>
           </div>
+          {statuses.length > 0 && (
+            <div className="status-chips">
+              {statuses.map((st) => (
+                <span key={st.key} className={`status-chip ${st.cls}`}>
+                  {st.label}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="angle" title="Elevation above the horizon (barrel angle in brackets)">
-        <div className="big">{elevation}°</div>
-        <div className="small">aim {angle}°</div>
+      <div className="angle" title="Elevation above the horizon (barrel angle below)">
+        <AngleDial elevation={elevation} min={def.angleMin} max={def.angleMax} aim={angle} />
+        <div>
+          <div className="big">{elevation}°</div>
+          <div className="small">aim {angle}°</div>
+        </div>
       </div>
 
       <div className="power">
         <div className="power-bar" aria-label={`Power ${Math.round(power)}`}>
           <div className="fill" style={{ width: `${power}%` }} />
+          {[25, 50, 75].map((t) => (
+            <div key={t} className="tick" style={{ left: `${t}%` }} />
+          ))}
           {active.lastPower !== null && (
             <div className="last" style={{ left: `calc(${active.lastPower}% - 1.5px)` }} title="Last shot" />
           )}
@@ -234,11 +261,10 @@ function Panel() {
               <i
                 style={{
                   width: `${(moveLeft / moveMax) * 100}%`,
-                  background: active.inked ? '#1f3fbf' : '#7a7a7a',
+                  background: active.rooted ? '#e0761e' : active.inked ? '#3d4fd0' : '#7a7a7a',
                 }}
               />
             </span>
-            {active.inked ? 'inked!' : ''}
           </div>
         </div>
       </div>
@@ -250,16 +276,20 @@ function Panel() {
           return (
             <button
               key={w.id}
-              className={`btn weapon ${s === 2 ? 'ss' : ''} ${slot === s ? 'selected' : ''}`}
+              className={`btn weapon ${s === 2 ? 'ss' : ''} ${slot === s ? 'selected' : ''} ${locked ? 'locked' : ''}`}
               disabled={!myTurn || locked}
               onClick={() => controller.selectWeapon(s)}
               title={w.blurb}
               role="radio"
               aria-checked={slot === s}
             >
+              <img className="wicon" src={shotIconUrl(w.spawns[0].def.sprite)} alt="" />
               <span className="key">{s === 2 ? '★ 3' : s + 1}</span>
               <span className="wname">{w.name}</span>
-              <span className="delay">delay {w.delay}</span>
+              <span className="delay">⧗ {w.delay}</span>
+              {locked && (
+                <span className="lock" style={{ ['--p' as string]: `${Math.min(100, active.special)}%` }} />
+              )}
             </button>
           );
         })}
@@ -287,6 +317,50 @@ function Panel() {
         </button>
       </div>
     </div>
+  );
+}
+
+/** A little protractor: the allowed aim range, and the barrel's elevation in it. */
+function AngleDial({
+  elevation,
+  min,
+  max,
+  aim,
+}: {
+  elevation: number;
+  min: number;
+  max: number;
+  aim: number;
+}) {
+  const r = 20;
+  const pt = (deg: number, k = 1) => {
+    const a = (deg * Math.PI) / 180;
+    return `${Math.cos(a) * r * k} ${-Math.sin(a) * r * k}`;
+  };
+  // The allowed range moves with the ground's tilt; show it around the current elevation.
+  const lo = elevation - (aim - min);
+  const hi = elevation + (max - aim);
+  return (
+    <svg className="dial" viewBox="-24 -24 48 30" aria-hidden="true">
+      <path
+        d={`M${pt(lo)} A${r} ${r} 0 0 0 ${pt(hi)}`}
+        fill="none"
+        stroke="#c9c2b0"
+        strokeWidth="5"
+        strokeLinecap="round"
+      />
+      <line x1="-22" y1="0" x2="22" y2="0" stroke="#2b2b2b" strokeWidth="1.2" strokeDasharray="2 2" />
+      <line
+        x1="0"
+        y1="0"
+        x2={Math.cos((elevation * Math.PI) / 180) * 21}
+        y2={-Math.sin((elevation * Math.PI) / 180) * 21}
+        stroke="#d64545"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+      />
+      <circle r="2.6" fill="#2b2b2b" />
+    </svg>
   );
 }
 

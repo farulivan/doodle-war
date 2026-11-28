@@ -49,6 +49,10 @@ export interface ActiveInfo extends QueueEntry {
   drawUsed: boolean;
   lastPower: number | null;
   inked: boolean;
+  /** Stuck in glue: no walking this turn. */
+  rooted: boolean;
+  /** Takes extra damage from the next hit. */
+  marked: boolean;
 }
 
 export interface ResultRow {

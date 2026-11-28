@@ -3,6 +3,8 @@ export const EMPTY = 0;
 export const DIRT = 1;
 /** Ink lines players draw with the Draw ability. */
 export const INK = 2;
+/** Glue the Glue Blob builds. Solid like the rest, and erasable. */
+export const GLUE = 3;
 
 /** Inclusive pixel rectangle. */
 export interface Rect {
@@ -121,6 +123,22 @@ export class Terrain {
     if (x0 > x1 || y0 > y1) return null;
     return { x0, y0, x1, y1 };
   }
+}
+
+/**
+ * A skip test for fills, from circles given as flat [x, y, r, ...]. Fills leave these out, so a doodle is
+ * never buried inside new terrain.
+ */
+export function circleSkipper(circles: number[]): (x: number, y: number) => boolean {
+  return (x, y) => {
+    for (let i = 0; i < circles.length; i += 3) {
+      const dx = x - circles[i];
+      const dy = y - circles[i + 1];
+      const r = circles[i + 2];
+      if (dx * dx + dy * dy <= r * r) return true;
+    }
+    return false;
+  };
 }
 
 export function unionRect(a: Rect, b: Rect): Rect {
