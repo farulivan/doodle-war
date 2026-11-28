@@ -20,7 +20,13 @@ type Sfx =
   | 'lose'
   | 'pickup'
   | 'pop'
-  | 'drop';
+  | 'drop'
+  | 'zap'
+  | 'goo'
+  | 'glide'
+  | 'callout'
+  | 'select'
+  | 'whoosh';
 export type Mood = 'menu' | 'battle';
 
 const SFX_LEVEL = 0.7;
@@ -227,6 +233,35 @@ class Audio {
         break;
       case 'drop':
         this.tone('sine', 1200, 500, 0.7, 0.07, 0, undefined, undefined, 0.2);
+        break;
+      case 'zap':
+        // A laser: a falling buzz with a bright edge.
+        this.duckMusic(0.35, 0.3);
+        this.tone('sawtooth', 2200 * v, 260, 0.22 * Math.min(1.6, intensity), 0.11);
+        this.tone('square', 3300 * v, 900, 0.12, 0.04);
+        this.noiseBurst(0.08, 'highpass', 5000, 3000, 0.18);
+        break;
+      case 'goo':
+        // A wet squelch.
+        this.noiseBurst(0.28, 'lowpass', 1100 * v, 180, 0.55 * Math.min(1.3, intensity), 5);
+        this.tone('sine', 190 * v, 80, 0.26, 0.3);
+        this.tone('sine', 420 * v, 140, 0.12, 0.12, 0.05);
+        break;
+      case 'glide':
+        this.noiseBurst(0.7, 'bandpass', 500, 1600, 0.22, 1.4);
+        this.tone('sine', 520, 760, 0.6, 0.05, 0, undefined, undefined, 0.2);
+        break;
+      case 'callout':
+        this.duckMusic(0.6, 0.9);
+        [659, 988, 1319, 1760].forEach((f, i) => this.tone('triangle', f, f, 0.24, 0.16, i * 0.07));
+        this.noiseBurst(0.5, 'highpass', 6000, 4000, 0.12, 0.6, undefined, this.ctx.currentTime + 0.2);
+        break;
+      case 'select':
+        this.tone('triangle', 660 * v, 990, 0.12, 0.16);
+        this.tone('sine', 1320 * v, 1320, 0.14, 0.06, 0.06);
+        break;
+      case 'whoosh':
+        this.noiseBurst(0.3, 'bandpass', 800, 2400, 0.2, 1.2);
         break;
       case 'lose':
         this.duckMusic(0.8, 1.4);

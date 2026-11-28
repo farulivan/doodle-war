@@ -3,16 +3,30 @@ import { audio } from '../game/audio';
 import { controller } from '../game/controller';
 import { hud, useStore } from '../game/store';
 import { online, session } from '../net/online';
+import { CharacterSelect } from './CharacterSelect';
 import { HowTo } from './HowTo';
 import { Hud } from './Hud';
+import { OpponentPicker, TimerPicker } from './MatchOptions';
 import { Lobby, OnlineMenu } from './Online';
 import { Results } from './Results';
 import { Setup } from './Setup';
 import { SettingsPanel } from './SettingsPanel';
+import { StageSelect } from './StageSelect';
 import { Title } from './Title';
-import { loadSetup, quickPlayConfig, toMatchConfig, type SetupState } from './setupModel';
+import { loadSetup, quickPlayConfig, saveSetup, toMatchConfig, type SetupState } from './setupModel';
 
-type Screen = 'loading' | 'nowebgl' | 'title' | 'setup' | 'howto' | 'settings' | 'online' | 'battle';
+type Screen =
+  | 'loading'
+  | 'nowebgl'
+  | 'title'
+  | 'quick-doodle'
+  | 'quick-stage'
+  | 'setup'
+  | 'custom-stage'
+  | 'howto'
+  | 'settings'
+  | 'online'
+  | 'battle';
 
 function hasWebGL(): boolean {
   try {
@@ -27,7 +41,11 @@ const inviteCode = new URLSearchParams(location.search).get('room')?.toUpperCase
 
 export function App() {
   const [screen, setScreen] = useState<Screen>('loading');
-  const [setup, setSetup] = useState<SetupState>(loadSetup);
+  const [setup, setSetupState] = useState<SetupState>(loadSetup);
+  const setSetup = (s: SetupState) => {
+    setSetupState(s);
+    saveSetup(s);
+  };
   const summary = useStore(hud, (s) => s.summary);
   const status = useStore(online, (s) => s.status);
   const lobbyPhase = useStore(online, (s) => s.lobby?.phase);
@@ -80,12 +98,19 @@ export function App() {
     toMenu();
   };
 
-  const start = (s: SetupState) => {
+  const startCustom = () => {
     audio.unlock();
-    setSetup(s);
     setScreen('battle');
-    void controller.startMatch(toMatchConfig(s), { turnSeconds: s.turnSeconds });
+    void controller.startMatch(toMatchConfig(setup), { turnSeconds: setup.turnSeconds });
   };
+
+  const startQuick = () => {
+    audio.unlock();
+    setScreen('battle');
+    void controller.startMatch(quickPlayConfig(setup), { turnSeconds: setup.turnSeconds });
+  };
+
+  const you = setup.teams[0][0];
 
   if (screen === 'nowebgl') {
     return (
@@ -135,10 +160,14 @@ export function App() {
     <>
       {screen === 'title' && (
         <Title
-          onQuickPlay={() => {
+          onQuickPlay={(kind) => {
             audio.unlock();
-            setScreen('battle');
-            void controller.startMatch(quickPlayConfig(setup), { turnSeconds: setup.turnSeconds });
+            if (kind) {
+              const teams = [setup.teams[0].slice(), setup.teams[1]] as SetupState['teams'];
+              teams[0][0] = { ...teams[0][0], kind };
+              setSetup({ ...setup, teams });
+            }
+            setScreen('quick-doodle');
           }}
           onCustom={() => setScreen('setup')}
           onOnline={() => {
@@ -153,7 +182,71 @@ export function App() {
         />
       )}
       {screen === 'settings' && <SettingsPanel onClose={() => setScreen('title')} />}
-      {screen === 'setup' && <Setup initial={setup} onBack={() => setScreen('title')} onStart={start} />}
+      {screen === 'quick-doodle' && (
+        <CharacterSelect
+          title="Choose your doodle"
+          teamIndex={0}
+          value={you.kind}
+          step="Step 1 of 2"
+          confirmLabel="Next: pick a stage →"
+          onBack={() => setScreen('title')}
+          onConfirm={(kind) => {
+            const teams = [setup.teams[0].slice(), setup.teams[1]] as SetupState['teams'];
+            teams[0][0] = {
+              ...you,
+              kind,
+              controller: 'human',
+              name: you.controller === 'human' ? you.name : 'You',
+            };
+            setSetup({ ...setup, teams });
+            setScreen('quick-stage');
+          }}
+        />
+      )}
+      {screen === 'quick-stage' && (
+        <StageSelect
+          mapId={setup.mapId}
+          mapSeed={setup.mapSeed}
+          perTeam={1}
+          step="Step 2 of 2"
+          confirmLabel="Fight!"
+          onChange={(mapId, mapSeed) => setSetup({ ...setup, mapId, mapSeed })}
+          onBack={() => setScreen('quick-doodle')}
+          onConfirm={startQuick}
+        >
+          <OpponentPicker
+            opponent={setup.quick.opponent}
+            level={setup.quick.botLevel}
+            onOpponent={(opponent) => setSetup({ ...setup, quick: { ...setup.quick, opponent } })}
+            onLevel={(botLevel) => setSetup({ ...setup, quick: { ...setup.quick, botLevel } })}
+          />
+        </StageSelect>
+      )}
+      {screen === 'setup' && (
+        <Setup
+          setup={setup}
+          onChange={setSetup}
+          onBack={() => setScreen('title')}
+          onNext={() => setScreen('custom-stage')}
+        />
+      )}
+      {screen === 'custom-stage' && (
+        <StageSelect
+          mapId={setup.mapId}
+          mapSeed={setup.mapSeed}
+          perTeam={setup.teamSize}
+          step="Step 2 of 2"
+          confirmLabel="Fight!"
+          onChange={(mapId, mapSeed) => setSetup({ ...setup, mapId, mapSeed })}
+          onBack={() => setScreen('setup')}
+          onConfirm={startCustom}
+        >
+          <TimerPicker
+            value={setup.turnSeconds}
+            onChange={(turnSeconds) => setSetup({ ...setup, turnSeconds })}
+          />
+        </StageSelect>
+      )}
       {screen === 'howto' && <HowTo onBack={() => setScreen('title')} />}
       {screen === 'online' && <OnlineMenu onBack={() => setScreen('title')} initialCode={inviteCode} />}
       {screen === 'battle' && (
@@ -165,7 +258,7 @@ export function App() {
               onRematch={() => void controller.rematch()}
               onSetup={() => {
                 controller.stop();
-                setSetup(loadSetup());
+                setSetupState(loadSetup());
                 setScreen('setup');
                 void controller.startDemo();
               }}

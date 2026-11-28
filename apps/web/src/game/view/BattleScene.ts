@@ -1,25 +1,31 @@
 import {
-  DRAW_MAX_LENGTH,
   DRAW_REACH,
   PICKUP_INFO,
   UNITS,
   aimDirection,
-  bodyCenter,
+  drawLengthFor,
+  mountPoint,
+  muzzle,
+  rangeFor,
   type GameState,
+  type GlideInfo,
   type Pickup,
   type PickupKind,
+  type ProjectileSprite,
   type ProjectileTrack,
   type Rect,
   type ShotEvent,
   type ShotResult,
   type Unit,
+  type WeaponSlot,
 } from '@doodle/sim';
 import Phaser from 'phaser';
-import { ROTATES_WITH_VELOCITY } from '../art/doodles';
 import { LINE_GAP, MARGIN_COLOR } from '../art/paper';
+import { PROJECTILE_RES, ROTATES_WITH_VELOCITY } from '../art/projectiles';
 import { TEAMS, team } from '../art/palette';
 import { audio } from '../audio';
 import { settings } from '../settings';
+import { DPR } from './dpr';
 import { TerrainView } from './TerrainView';
 import { DEPTH, UnitView } from './UnitView';
 import { BURST_VARIANTS, CHUNK_VARIANTS, CLOUD_VARIANTS, DOODLE_VARIANTS, keys } from './textures';
@@ -29,6 +35,10 @@ const SKY = 760;
 const SIDE_PAD = 260;
 const BOTTOM_PAD = 220;
 const TICK_MS = 1000 / 60;
+/** CSS pixels the control panel covers at the bottom of the screen; shots are framed above it. */
+const HUD_BOTTOM = 150;
+/** Text is drawn at this resolution, so it stays sharp at the canvas's density. */
+const TEXT_RES = DPR * 1.25;
 
 export interface SceneHooks {
   /** Called every frame before rendering. */
@@ -56,14 +66,21 @@ interface Cloud {
 /** Trail look per projectile, so every weapon reads differently in the air. */
 const TRAILS: Record<string, { color: number; alpha: number; width: number; every: number; dots?: boolean }> =
   {
-    ink: { color: 0x1f3fbf, alpha: 0.55, width: 3, every: 3, dots: true },
-    inkDrop: { color: 0x1f3fbf, alpha: 0.45, width: 2, every: 3, dots: true },
+    ink: { color: 0x3d4fd0, alpha: 0.55, width: 3, every: 3, dots: true },
+    inkDrop: { color: 0x3d4fd0, alpha: 0.45, width: 2, every: 3, dots: true },
     dart: { color: 0x7a7a7a, alpha: 0.5, width: 1.5, every: 4, dots: true },
     staple: { color: 0x6d7f99, alpha: 0.6, width: 1.5, every: 1 },
     band: { color: 0xc0392b, alpha: 0.5, width: 2, every: 2 },
     drill: { color: 0xd9a830, alpha: 0.6, width: 2, every: 2 },
+    cap: { color: 0x8fb71c, alpha: 0.55, width: 2, every: 3, dots: true },
+    glob: { color: 0xb9b4cf, alpha: 0.6, width: 2.5, every: 3, dots: true },
+    wall: { color: 0xf2a65a, alpha: 0.55, width: 2.5, every: 3, dots: true },
+    superglue: { color: 0xf28a2b, alpha: 0.6, width: 3.5, every: 2, dots: true },
     default: { color: 0x555555, alpha: 0.55, width: 2, every: 2 },
   };
+
+const BEAMS = new Set<ProjectileSprite>(['beam', 'megabeam']);
+const GLUES = new Set<ProjectileSprite>(['glob', 'wall', 'superglue']);
 
 interface Playback {
   result: ShotResult;
@@ -91,8 +108,12 @@ export class BattleScene extends Phaser.Scene {
   private drawStart: { x: number; y: number } | null = null;
   private pinchDist = 0;
   aimGuideFor: number | null = null;
+  /** The weapon picked, so the guide can show a laser sight for beams. */
+  aimSlot: WeaponSlot = 0;
+  /** Charge of the doodle aiming, 0 to 100. */
+  aimPower = 0;
   drawMode = false;
-  /** Bigger zoom-out on phones. */
+  /** Bigger zoom-out on phones. In CSS pixels: the camera's own zoom also carries the pixel density. */
   baseZoom = 1;
   /** The zoom the player picked; shots zoom out temporarily and come back to this. */
   private userZoom = 1;
@@ -124,17 +145,32 @@ export class BattleScene extends Phaser.Scene {
     this.hooks.onReady();
   }
 
+  /** The view's size in CSS pixels. */
+  private get cssWidth(): number {
+    return this.scale.width / DPR;
+  }
+
+  private get cssHeight(): number {
+    return this.scale.height / DPR;
+  }
+
+  private setCamZoom(zoom: number): void {
+    this.cameras.main.setZoom(zoom * DPR);
+  }
+
+  private camZoom(): number {
+    return this.cameras.main.zoom / DPR;
+  }
+
   // -------------------------------------------------------------------------
   // World setup
 
   buildWorld(state: GameState): void {
     this.clearWorld();
     this.state = state;
-    const {
-      width: W,
-      height: H,
-      paper,
-    } = { width: state.map.width, height: state.map.height, paper: state.map.paper };
+    const W = state.map.width;
+    const H = state.map.height;
+    const paper = state.map.paper;
     const cam = this.cameras.main;
     cam.setBounds(-SIDE_PAD, -SKY, W + SIDE_PAD * 2, H + SKY + BOTTOM_PAD);
 
@@ -162,7 +198,6 @@ export class BattleScene extends Phaser.Scene {
         .setOrigin(0)
         .setDepth(DEPTH.paper),
     );
-    // Offset the tile so ruled lines line up with the paper's top edge.
     const deco = add(this.add.graphics().setDepth(DEPTH.decor));
     if (paper === 'ruled') {
       deco.lineStyle(2, Phaser.Display.Color.HexStringToColor(MARGIN_COLOR).color, 0.8);
@@ -207,6 +242,7 @@ export class BattleScene extends Phaser.Scene {
           fontFamily: '"Permanent Marker", cursive',
           fontSize: '42px',
           color: '#6b6b6b',
+          resolution: TEXT_RES,
         })
         .setOrigin(1, 0)
         .setAlpha(0.5)
@@ -227,7 +263,7 @@ export class BattleScene extends Phaser.Scene {
       this.clouds.push({ img, speed: rng.realInRange(0.6, 1.3) });
     }
 
-    this.terrain = new TerrainView(this, state.terrain, DEPTH.terrain);
+    this.terrain = new TerrainView(this, state.terrain, DEPTH.terrain, state.map.id);
     for (const u of state.units) this.units.set(u.id, new UnitView(this, u));
 
     this.userZoom = this.baseZoom;
@@ -269,12 +305,11 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private fitZoom(): void {
-    const cam = this.cameras.main;
-    const small = Math.min(this.scale.width, this.scale.height) < 560;
-    this.baseZoom = small ? 0.6 : this.scale.width < 1000 ? 0.8 : 1;
+    const small = Math.min(this.cssWidth, this.cssHeight) < 560;
+    this.baseZoom = small ? 0.62 : this.cssWidth < 1000 ? 0.82 : 1;
     if (!this.state) this.userZoom = this.baseZoom;
-    this.userZoom = Phaser.Math.Clamp(this.userZoom, this.minZoom(), 1.6);
-    cam.setZoom(this.userZoom);
+    this.userZoom = Phaser.Math.Clamp(this.userZoom, this.minZoom(), 1.8);
+    this.setCamZoom(this.userZoom);
   }
 
   private minZoom(): number {
@@ -282,8 +317,8 @@ export class BattleScene extends Phaser.Scene {
     return Math.max(
       0.25,
       Math.min(
-        this.scale.width / (this.state.map.width + 300),
-        this.scale.height / (this.state.map.height + SKY * 0.6),
+        this.cssWidth / (this.state.map.width + 300),
+        this.cssHeight / (this.state.map.height + SKY * 0.6),
       ),
     );
   }
@@ -312,9 +347,10 @@ export class BattleScene extends Phaser.Scene {
     cam.scrollY += (ty - cam.scrollY) * k;
   }
 
-  /** Clouds blow with the turn's wind and wrap around the page. */
+  /** Clouds and scarves blow with the turn's wind. */
   setWind(ax: number): void {
     this.targetCloudWind = ax;
+    for (const v of this.units.values()) v.setWind(ax);
   }
 
   private updateClouds(dt: number): void {
@@ -335,7 +371,8 @@ export class BattleScene extends Phaser.Scene {
 
   focusUnit(id: number): void {
     const v = this.units.get(id);
-    if (v) this.focus(v.x, v.y - 60);
+    // A little low on screen, clear of the control panel.
+    if (v) this.focus(v.x, v.y - 60 + HUD_BOTTOM / 2 / this.camZoom());
   }
 
   /** Lets the camera follow again even if the player just panned. */
@@ -354,7 +391,7 @@ export class BattleScene extends Phaser.Scene {
         v.setPose(u.x, u.y, u.tilt, u.facing, u.angle);
         v.syncHp(u.hp);
       }
-      v.setInked(u.inked > 0);
+      v.setStatuses(u);
     }
   }
 
@@ -367,11 +404,18 @@ export class BattleScene extends Phaser.Scene {
     for (const v of this.units.values()) v.setActive(v.id === id);
   }
 
+  /** The aiming doodle's charge, so it grits its teeth as the power climbs. */
+  setCharge(id: number, power: number): void {
+    this.units.get(id)?.setCharge(power);
+    this.aimPower = power;
+  }
+
   /** Animates a fall that happened while walking (the sim already moved the unit). */
   animateWalkFall(u: Unit, fromY: number, toY: number, dead: boolean): Promise<void> {
     const v = this.units.get(u.id);
     if (!v) return Promise.resolve();
     audio.play('fall');
+    v.setFalling(true);
     return new Promise((resolve) => {
       const proxy = { y: fromY };
       this.tweens.add({
@@ -381,20 +425,53 @@ export class BattleScene extends Phaser.Scene {
         ease: 'Quad.easeIn',
         onUpdate: () => v.setY(proxy.y),
         onComplete: () => {
-          if (dead) {
-            v.die('fell');
-            this.floatText(
-              u.x,
-              Math.min(toY, this.state!.map.height) - 40,
-              'Fell off the page!',
-              '#c0392b',
-              26,
-            );
-          }
+          v.setFalling(false);
+          if (dead) this.fellOff(v, u.x, toY);
+          else this.puff(u.x, toY, 0.35);
           resolve();
         },
       });
     });
+  }
+
+  /** The Paper Plane's glide off a ledge, then any drop at the end of it. */
+  animateGlide(u: Unit, glide: GlideInfo, fallToY: number | null, dead: boolean): Promise<void> {
+    const v = this.units.get(u.id);
+    if (!v) return Promise.resolve();
+    audio.play('glide');
+    v.setFalling(true);
+    return new Promise((resolve) => {
+      const p = { t: 0 };
+      const dist = Math.abs(glide.toX - glide.fromX);
+      this.tweens.add({
+        targets: p,
+        t: 1,
+        duration: Math.max(260, dist * 9),
+        ease: 'Sine.easeInOut',
+        onUpdate: () => {
+          const x = glide.fromX + (glide.toX - glide.fromX) * p.t;
+          // A little float up in the middle of the glide.
+          const y = glide.fromY + (glide.toY - glide.fromY) * p.t - Math.sin(p.t * Math.PI) * 6;
+          v.setXY(x, y);
+          this.focus(x, y - 60);
+        },
+        onComplete: () => {
+          if (fallToY === null || fallToY <= glide.toY + 1) {
+            v.setFalling(false);
+            this.puff(glide.toX, glide.toY, 0.3);
+            resolve();
+            return;
+          }
+          void this.animateWalkFall(u, glide.toY, fallToY, dead).then(resolve);
+        },
+      });
+    });
+  }
+
+  private fellOff(v: UnitView, x: number, toY: number): void {
+    v.die('fell');
+    if (!this.state) return;
+    this.floatText(x, Math.min(toY, this.state.map.height) - 40, 'OFF THE PAGE!', '#c0392b', 30, true);
   }
 
   // -------------------------------------------------------------------------
@@ -536,18 +613,8 @@ export class BattleScene extends Phaser.Scene {
           v.setPose(x, y, ms < upMs ? 0 : u.tilt, v.facing, v.angle);
         },
         onComplete: () => {
-          if (dead) {
-            v.die('fell');
-            this.floatText(
-              u.x,
-              Math.min(toY, this.state!.map.height) - 40,
-              'Fell off the page!',
-              '#c0392b',
-              26,
-            );
-          } else {
-            this.puff(u.x, u.y, 0.35);
-          }
+          if (dead) this.fellOff(v, u.x, toY);
+          else this.puff(u.x, u.y, 0.35);
           resolve();
         },
       });
@@ -565,32 +632,42 @@ export class BattleScene extends Phaser.Scene {
     const u = this.state.units[this.aimGuideFor];
     const v = this.units.get(this.aimGuideFor);
     if (!u || !v || !u.alive) return;
-    const c = bodyCenter(u);
     const def = UNITS[u.kind];
     const color = team(u.team).hex;
+    const shooter = { ...u, facing: v.facing };
+    const pivot = mountPoint(shooter);
 
-    // Allowed aim range as a faint arc.
+    // Allowed aim range as a faint arc around the barrel's mount.
     g.lineStyle(2, color, 0.25);
     const steps = 18;
+    const reach = def.mount.length + 18;
     g.beginPath();
     for (let i = 0; i <= steps; i++) {
       const a = def.angleMin + ((def.angleMax - def.angleMin) * i) / steps;
-      const d = aimDirection({ ...u, facing: v.facing }, a);
-      const px = c.x + d.dx * 46;
-      const py = c.y + d.dy * 46;
+      const d = aimDirection(shooter, a);
+      const px = pivot.x + d.dx * reach;
+      const py = pivot.y + d.dy * reach;
       if (i === 0) g.moveTo(px, py);
       else g.lineTo(px, py);
     }
     g.strokePath();
 
-    // Dashed sight line along the barrel.
-    const d = aimDirection({ ...u, facing: v.facing }, v.angle);
-    g.lineStyle(2, color, 0.85);
-    for (let s = 26; s < 120; s += 14) {
-      g.lineBetween(c.x + d.dx * s, c.y + d.dy * s, c.x + d.dx * (s + 7), c.y + d.dy * (s + 7));
+    const weapon = def.weapons[this.aimSlot];
+    const shot = weapon.spawns[0].def;
+    if (shot.range !== undefined)
+      this.drawLaserSight(g, shooter, shot.range, shot.pierce ?? false, shot.drill ?? 0);
+    else {
+      // Dashed sight line out from the barrel.
+      const d = aimDirection(shooter, v.angle);
+      const tip = muzzle(shooter, v.angle);
+      g.lineStyle(2, color, 0.85);
+      for (let s = 4; s < 90; s += 14) {
+        g.lineBetween(tip.x + d.dx * s, tip.y + d.dy * s, tip.x + d.dx * (s + 7), tip.y + d.dy * (s + 7));
+      }
     }
 
     if (this.drawMode) {
+      const c = { x: u.x, y: u.y - def.bodyRadius };
       g.lineStyle(2, 0x2244aa, 0.5);
       const segs = 48;
       for (let i = 0; i < segs; i += 2) {
@@ -603,6 +680,76 @@ export class BattleScene extends Phaser.Scene {
           c.y + Math.sin(a1) * DRAW_REACH,
         );
       }
+    }
+  }
+
+  /**
+   * The Highlighter's passive: the beam's whole line, to where it would stop, with a tick every 10 power.
+   * A piercing beam goes on through doodles and through cover until its drill runs out. While charging, a
+   * ring shows where this power bursts.
+   */
+  private drawLaserSight(
+    g: Phaser.GameObjects.Graphics,
+    u: Unit,
+    range: number,
+    pierce: boolean,
+    drill: number,
+  ): void {
+    const state = this.state!;
+    const v = this.units.get(u.id)!;
+    const d = aimDirection(u, v.angle);
+    const tip = muzzle(u, v.angle);
+    const max = rangeFor(range, 100);
+    const step = 3;
+    let hit = max;
+    let dug = 0;
+    for (let s = 0; s < max; s += step) {
+      const x = tip.x + d.dx * s;
+      const y = tip.y + d.dy * s;
+      if (state.terrain.solid(x, y)) {
+        dug += step;
+        if (dug >= drill) {
+          hit = s;
+          break;
+        }
+        continue;
+      }
+      if (pierce) continue;
+      const target = state.units.find(
+        (o) =>
+          o.alive &&
+          o.id !== u.id &&
+          Math.hypot(o.x - x, o.y - UNITS[o.kind].bodyRadius - y) <= UNITS[o.kind].bodyRadius + 2,
+      );
+      if (target) {
+        hit = s;
+        break;
+      }
+    }
+    const pulse = 0.55 + Math.sin(this.time.now / 140) * 0.15;
+    g.lineStyle(5, 0xe4ff4d, 0.22);
+    g.lineBetween(tip.x, tip.y, tip.x + d.dx * hit, tip.y + d.dy * hit);
+    g.lineStyle(1.6, 0xb9e021, pulse + 0.25);
+    for (let s = 0; s < hit; s += 12) {
+      const e = Math.min(hit, s + 7);
+      g.lineBetween(tip.x + d.dx * s, tip.y + d.dy * s, tip.x + d.dx * e, tip.y + d.dy * e);
+    }
+    // A tick every 10 power, so you can read the range.
+    for (let p = 10; p <= 100; p += 10) {
+      const s = rangeFor(range, p);
+      if (s > hit) break;
+      const x = tip.x + d.dx * s;
+      const y = tip.y + d.dy * s;
+      const w = p % 50 === 0 ? 7 : 4;
+      g.lineStyle(2, 0x6d8a12, 0.9);
+      g.lineBetween(x - d.dy * w, y + d.dx * w, x + d.dy * w, y - d.dx * w);
+    }
+    g.fillStyle(0xe4ff4d, 0.9);
+    g.fillCircle(tip.x + d.dx * hit, tip.y + d.dy * hit, 3.5);
+    if (this.aimPower > 0) {
+      const s = Math.min(hit, rangeFor(range, this.aimPower));
+      g.lineStyle(2.5, 0x3a4a10, 0.9);
+      g.strokeCircle(tip.x + d.dx * s, tip.y + d.dy * s, 9);
     }
   }
 
@@ -623,12 +770,13 @@ export class BattleScene extends Phaser.Scene {
     g.clear();
     if (!this.drawStart || !this.state || this.aimGuideFor === null) return;
     const u = this.state.units[this.aimGuideFor];
-    const c = bodyCenter(u);
+    const c = { x: u.x, y: u.y - UNITS[u.kind].bodyRadius };
+    const maxLength = drawLengthFor(u.kind);
     let x1 = x;
     let y1 = y;
     const len = Math.hypot(x1 - this.drawStart.x, y1 - this.drawStart.y);
-    if (len > DRAW_MAX_LENGTH) {
-      const k = DRAW_MAX_LENGTH / len;
+    if (len > maxLength) {
+      const k = maxLength / len;
       x1 = this.drawStart.x + (x1 - this.drawStart.x) * k;
       y1 = this.drawStart.y + (y1 - this.drawStart.y) * k;
     }
@@ -681,7 +829,7 @@ export class BattleScene extends Phaser.Scene {
       if (this.dragStart && p.isDown) {
         const dx = p.x - this.dragStart.x;
         const dy = p.y - this.dragStart.y;
-        if (!this.dragStart.moved && Math.hypot(dx, dy) < 5) return;
+        if (!this.dragStart.moved && Math.hypot(dx, dy) < 5 * DPR) return;
         this.dragStart.moved = true;
         cam.scrollX = this.dragStart.scrollX - dx / cam.zoom;
         cam.scrollY = this.dragStart.scrollY - dy / cam.zoom;
@@ -707,24 +855,24 @@ export class BattleScene extends Phaser.Scene {
   }
 
   zoomBy(factor: number): void {
-    const cam = this.cameras.main;
-    this.userZoom = Phaser.Math.Clamp(cam.zoom * factor, this.minZoom(), 1.6);
-    cam.setZoom(this.userZoom);
+    this.userZoom = Phaser.Math.Clamp(this.camZoom() * factor, this.minZoom(), 1.8);
+    this.setCamZoom(this.userZoom);
     this.manualUntil = this.time.now + 2500;
   }
 
   /** Eases back to the player's chosen zoom after a shot zoomed out. */
   restoreZoom(): void {
     const cam = this.cameras.main;
-    if (Math.abs(cam.zoom - this.userZoom) > 0.01) cam.zoomTo(this.userZoom, 450, 'Sine.easeInOut');
+    if (Math.abs(this.camZoom() - this.userZoom) > 0.01)
+      cam.zoomTo(this.userZoom * DPR, 450, 'Sine.easeInOut');
   }
 
   /** Zoom to fit the whole map, or back to normal. */
   toggleOverview(): void {
     const cam = this.cameras.main;
-    const overview = cam.zoom <= this.minZoom() + 0.01;
+    const overview = this.camZoom() <= this.minZoom() + 0.01;
     this.userZoom = overview ? this.baseZoom : this.minZoom();
-    cam.zoomTo(this.userZoom, 300);
+    cam.zoomTo(this.userZoom * DPR, 300);
     if (!overview && this.state) {
       this.camTarget = { x: this.state.map.width / 2, y: this.state.map.height / 2 - SKY * 0.2 };
       this.manualUntil = 0;
@@ -739,7 +887,10 @@ export class BattleScene extends Phaser.Scene {
     return new Promise((resolve) => {
       const actor = this.units.get(result.actorId);
       actor?.recoil();
-      audio.play('fire');
+      actor?.setCharge(0);
+      this.aimPower = 0;
+      const sprite = result.tracks[0]?.sprite;
+      audio.play(sprite && BEAMS.has(sprite) ? 'zap' : 'fire', sprite === 'megabeam' ? 1.6 : 1);
       this.puff(result.origin.x, result.origin.y, 0.6);
       this.playback = {
         result,
@@ -782,12 +933,13 @@ export class BattleScene extends Phaser.Scene {
       maxY = Math.min(maxY, this.state.map.height + BOTTOM_PAD);
     }
     const pad = 220;
-    const fit = Math.min(cam.width / (maxX - minX + pad), cam.height / (maxY - minY + pad * 1.4));
+    // Frame the arc in the part of the screen the control panel doesn't cover.
+    const viewH = Math.max(200, this.cssHeight - HUD_BOTTOM);
+    const fit = Math.min(this.cssWidth / (maxX - minX + pad), viewH / (maxY - minY + pad * 1.1));
     const zoom = Math.max(this.minZoom(), Math.min(this.userZoom, fit));
-    if (Math.abs(zoom - cam.zoom) > 0.01) cam.zoomTo(zoom, 500, 'Sine.easeInOut');
+    if (Math.abs(zoom - this.camZoom()) > 0.01) cam.zoomTo(zoom * DPR, 500, 'Sine.easeInOut');
     if (fit < this.minZoom()) return null;
-    // Bias down a little so the HUD at the bottom doesn't cover the landing spot.
-    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 + 40 / zoom };
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 + HUD_BOTTOM / 2 / zoom };
   }
 
   private stepPlayback(dt: number): void {
@@ -807,6 +959,7 @@ export class BattleScene extends Phaser.Scene {
       if (track.spawnTick === pb.tick) {
         const sprite = this.add
           .image(track.points[0], track.points[1], keys.projectile(track.sprite))
+          .setScale(1 / PROJECTILE_RES)
           .setDepth(DEPTH.projectile);
         const trail = this.add.graphics().setDepth(DEPTH.trail);
         pb.tracks.push({
@@ -840,22 +993,37 @@ export class BattleScene extends Phaser.Scene {
       } else {
         ts.sprite.rotation += ts.spin;
       }
-      const style = TRAILS[ts.track.sprite] ?? TRAILS.default;
-      if (idx > 0 && idx % style.every === 0) {
-        if (style.dots) {
-          ts.trail.fillStyle(style.color, style.alpha);
-          ts.trail.fillCircle(x, y, style.width * 0.8);
-        } else {
-          ts.trail.lineStyle(style.width, style.color, style.alpha);
-          ts.trail.lineBetween(prevX, prevY, x, y);
+      if (BEAMS.has(ts.track.sprite)) {
+        // A beam is light: one unbroken glowing line behind its head.
+        const big = ts.track.sprite === 'megabeam';
+        ts.trail.lineStyle(big ? 22 : 11, 0xe4ff4d, 0.22);
+        ts.trail.lineBetween(prevX, prevY, x, y);
+        ts.trail.lineStyle(big ? 9 : 4, 0xf3ff9e, 0.85);
+        ts.trail.lineBetween(prevX, prevY, x, y);
+        ts.trail.lineStyle(big ? 3.5 : 1.6, 0xffffff, 1);
+        ts.trail.lineBetween(prevX, prevY, x, y);
+        if (idx % 2 === 0 && !settings.get().reducedMotion) this.burstParticles(x, y, keys.neondot, 1, 60);
+      } else {
+        const style = TRAILS[ts.track.sprite] ?? TRAILS.default;
+        if (idx > 0 && idx % style.every === 0) {
+          if (style.dots) {
+            ts.trail.fillStyle(style.color, style.alpha);
+            ts.trail.fillCircle(x, y, style.width * 0.8);
+          } else {
+            ts.trail.lineStyle(style.width, style.color, style.alpha);
+            ts.trail.lineBetween(prevX, prevY, x, y);
+          }
         }
-      }
-      if (ts.track.sprite === 'staple' && idx % 3 === 0 && !settings.get().reducedMotion) {
-        this.sparkle(x, y);
+        if (ts.track.sprite === 'staple' && idx % 3 === 0 && !settings.get().reducedMotion) {
+          this.sparkle(x, y);
+        }
       }
       ts.lastIndex = idx;
       if (!lead) lead = ts;
     }
+
+    // Everyone watches the shot.
+    for (const v of this.units.values()) v.setLook(lead ? lead.sprite.x : null, lead?.sprite.y);
 
     if (pb.frame) this.focus(pb.frame.x, pb.frame.y);
     else if (lead) this.focus(lead.sprite.x, lead.sprite.y);
@@ -871,42 +1039,65 @@ export class BattleScene extends Phaser.Scene {
       for (const ts of pb.tracks) {
         ts.sprite.destroy();
         const trail = ts.trail;
-        this.tweens.add({ targets: trail, alpha: 0, duration: 900, onComplete: () => trail.destroy() });
+        const beam = BEAMS.has(ts.track.sprite);
+        this.tweens.add({
+          targets: trail,
+          alpha: 0,
+          duration: beam ? 350 : 900,
+          onComplete: () => trail.destroy(),
+        });
       }
+      for (const v of this.units.values()) v.setLook(null);
       this.playback = null;
-      pb.resolve();
+      // A callout gets its moment before the next turn's banner takes the same spot.
+      if (this.callouts(result)) this.time.delayedCall(1100, () => pb.resolve());
+      else pb.resolve();
     }
   }
 
   private handleEvent(e: ShotEvent, pb: Playback): void {
     switch (e.type) {
       case 'explode': {
-        this.explosion(e.x, e.y, e.radius, e.ink);
+        this.explosion(e.x, e.y, e.radius, e.sprite, e.ink);
         // Tiny hit-stop: hold the playback a beat so impacts land.
         pb.acc -= e.directUnit !== null ? 110 : 50;
-        if (e.directUnit !== null) {
-          this.floatText(e.x, e.y - 50, 'DIRECT HIT!', '#c0392b', 30);
-        }
+        if (e.directUnit !== null) this.floatText(e.x, e.y - 50, 'DIRECT HIT!', '#c0392b', 30);
         if (!pb.frame) this.focus(e.x, e.y);
         break;
       }
       case 'carve':
         this.terrain?.carve(e.x, e.y, e.radius, this.isInkCarve(pb, e.tick, e.x, e.y));
         break;
+      case 'build':
+        this.terrain?.build(e.x, e.y, e.radius, e.skip);
+        this.glueSplash(e.x, e.y, e.radius);
+        break;
       case 'damage': {
         const v = this.units.get(e.unitId);
         if (v) {
           v.setHp(e.hpAfter);
           v.flinch(e.amount > 200 ? 1.4 : 1);
-          this.floatText(v.x, v.y - 70, `-${e.amount}`, '#c0392b', e.direct ? 36 : 28);
+          this.floatText(v.x, v.headY - 14, `-${e.amount}`, '#c0392b', e.direct ? 36 : 28);
           if (navigator.vibrate && e.direct) navigator.vibrate(30);
+          // A pierce leaves a neon flash where it went through.
+          const track = pb.result.tracks.find((t) => t.sprite === 'megabeam');
+          if (track && e.direct) this.neonFlash(v.x, v.y - 18, 26);
         }
         audio.play('hit');
         break;
       }
-      case 'inked':
-        this.units.get(e.unitId)?.setInked(true);
+      case 'status': {
+        const v = this.units.get(e.unitId);
+        if (!v) break;
+        v.setStatus(e.status, true);
+        const label = {
+          inked: ['INKED!', '#3d4fd0'],
+          rooted: ['STUCK!', '#d9741c'],
+          marked: ['HIGHLIGHTED!', '#6d8a12'],
+        }[e.status];
+        this.floatText(v.x, v.headY - 40, label[0], label[1], 22);
         break;
+      }
       case 'split':
         audio.play('split');
         this.puff(e.x, e.y, 0.5);
@@ -928,13 +1119,17 @@ export class BattleScene extends Phaser.Scene {
         const v = this.units.get(e.unitId);
         if (!v) break;
         const proxy = { y: e.fromY };
-        if (e.toY - e.fromY > 30) audio.play('fall');
+        if (e.toY - e.fromY > 30) {
+          audio.play('fall');
+          v.setFalling(true);
+        }
         this.tweens.add({
           targets: proxy,
           y: e.toY,
           duration: e.ticks * TICK_MS,
           ease: 'Quad.easeIn',
           onUpdate: () => v.setY(proxy.y),
+          onComplete: () => v.setFalling(false),
         });
         break;
       }
@@ -952,11 +1147,12 @@ export class BattleScene extends Phaser.Scene {
       case 'death': {
         const v = this.units.get(e.unitId);
         if (!v) break;
-        v.die(e.cause);
         if (e.cause === 'fell' && this.state) {
-          this.floatText(v.x, this.state.map.height - 60, 'Fell off the page!', '#c0392b', 26);
+          v.die('fell');
+          this.floatText(v.x, this.state.map.height - 60, 'OFF THE PAGE!', '#c0392b', 30, true);
         } else {
-          this.floatText(v.x, v.y - 90, 'ERASED!', '#2b2b2b', 32);
+          v.die('hp');
+          this.floatText(v.x, v.headY - 40, 'ERASED!', '#2b2b2b', 32);
         }
         break;
       }
@@ -972,14 +1168,79 @@ export class BattleScene extends Phaser.Scene {
     return false;
   }
 
+  /**
+   * Big moments get called out once the shot settles: several doodles erased at once, a long beam that
+   * found its mark, a bounce that hit, a lob from the clouds.
+   */
+  private callouts(result: ShotResult): boolean {
+    if (!this.state) return false;
+    const actor = this.state.units[result.actorId];
+    const enemyDeaths = result.events.filter(
+      (e) => e.type === 'death' && this.state!.units[e.unitId].team !== actor.team,
+    ).length;
+    const direct = result.events.filter((e) => e.type === 'damage' && e.direct);
+    const first = direct[0];
+    let text: string | null = null;
+    if (enemyDeaths >= 3) text = 'TRIPLE ERASE!';
+    else if (enemyDeaths === 2) text = 'DOUBLE ERASE!';
+    else if (result.tracks.some((t) => t.sprite === 'megabeam') && direct.length >= 2)
+      text = `PIERCED ×${direct.length}!`;
+    else if (first && first.type === 'damage') {
+      const target = this.state.units[first.unitId];
+      const dist = Math.hypot(target.x - result.origin.x, target.y - result.origin.y);
+      const bounced = result.events.some((e) => e.type === 'bounce' && e.tick < first.tick);
+      const apex = Math.min(...result.tracks.map((t) => Math.min(...t.points.filter((_, i) => i % 2 === 1))));
+      if (bounced) text = 'TRICK SHOT!';
+      else if (result.tracks.some((t) => BEAMS.has(t.sprite)) && dist > 900) text = 'SNIPED!';
+      else if (result.origin.y - apex > 650) text = 'SKY DROP!';
+      else if (dist > 1300) text = 'LONG SHOT!';
+    }
+    if (!text) return false;
+    audio.play('callout');
+    const cam = this.cameras.main;
+    // Scroll-factor-0 objects still zoom around the view's center, so place it for that.
+    const y = cam.height / 2 - (cam.height * 0.2) / cam.zoom;
+    const t = this.add
+      .text(cam.width / 2, y, text, {
+        fontFamily: '"Permanent Marker", cursive',
+        fontSize: `${Math.round(54 * DPR)}px`,
+        color: '#ffd23f',
+        stroke: '#2b2b2b',
+        strokeThickness: 10 * DPR,
+        resolution: 1.25,
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(DEPTH.label + 10)
+      .setAngle(-4)
+      .setScale(0.3 / cam.zoom);
+    this.tweens.add({ targets: t, scale: 1 / cam.zoom, duration: 260, ease: 'Back.easeOut' });
+    this.tweens.add({
+      targets: t,
+      alpha: 0,
+      y: t.y - 30,
+      delay: 1100,
+      duration: 500,
+      onComplete: () => t.destroy(),
+    });
+    return true;
+  }
+
   // -------------------------------------------------------------------------
   // Effects
 
-  explosion(x: number, y: number, radius: number, ink: boolean): void {
+  explosion(x: number, y: number, radius: number, sprite: ProjectileSprite, ink: boolean): void {
     const scale = Math.max(0.45, radius / 48);
+    const glue = GLUES.has(sprite);
+    const neon = BEAMS.has(sprite) || sprite === 'cap';
+    const variant = Phaser.Math.Between(0, BURST_VARIANTS - 1);
     const key = ink
-      ? keys.splat(Phaser.Math.Between(0, BURST_VARIANTS - 1))
-      : keys.burst(Phaser.Math.Between(0, BURST_VARIANTS - 1));
+      ? keys.splat(variant)
+      : glue
+        ? keys.glue(variant)
+        : neon
+          ? keys.neon(variant)
+          : keys.burst(variant);
     const img = this.add
       .image(x, y, key)
       .setDepth(DEPTH.fx)
@@ -988,20 +1249,28 @@ export class BattleScene extends Phaser.Scene {
     this.tweens.add({ targets: img, scale: scale * 1.05, duration: 160, ease: 'Back.easeOut' });
     this.tweens.add({ targets: img, alpha: 0, delay: 220, duration: 420, onComplete: () => img.destroy() });
 
-    const words = ink ? ['SPLAT!', 'SPLOOSH!', 'BLOT!'] : ['POW!', 'BOOM!', 'KRAK!', 'WHAM!', 'BAM!'];
+    const words = ink
+      ? ['SPLAT!', 'SPLOOSH!', 'BLOT!']
+      : glue
+        ? ['GLOOP!', 'SPLORT!', 'BLORP!']
+        : neon
+          ? ['ZAP!', 'ZING!', 'FWOOM!']
+          : ['POW!', 'BOOM!', 'KRAK!', 'WHAM!', 'BAM!'];
     const word = words[Math.floor(Math.random() * words.length)];
     this.floatText(
       x + Phaser.Math.Between(-20, 20),
       y - radius - 10,
       word,
-      ink ? '#1f3fbf' : '#2b2b2b',
+      ink ? '#3d4fd0' : glue ? '#d9741c' : neon ? '#6d8a12' : '#2b2b2b',
       26 + radius * 0.4,
       true,
     );
 
     const calm = settings.get().reducedMotion;
     // White flash, then an expanding shockwave ring.
-    const flash = this.add.circle(x, y, radius * 0.9, 0xffffff, 0.85).setDepth(DEPTH.fx - 2);
+    const flash = this.add
+      .circle(x, y, radius * 0.9, neon ? 0xf3ff9e : 0xffffff, 0.85)
+      .setDepth(DEPTH.fx - 2);
     this.tweens.add({
       targets: flash,
       alpha: 0,
@@ -1011,7 +1280,7 @@ export class BattleScene extends Phaser.Scene {
     });
     const ring = this.add
       .circle(x, y, radius, 0x000000, 0)
-      .setStrokeStyle(3, ink ? 0x1f3fbf : 0x2b2b2b, 0.7)
+      .setStrokeStyle(3, ink ? 0x3d4fd0 : glue ? 0xb9b4cf : neon ? 0x9fc21f : 0x2b2b2b, 0.7)
       .setDepth(DEPTH.fx - 1);
     ring.setScale(0.4);
     this.tweens.add({
@@ -1025,16 +1294,37 @@ export class BattleScene extends Phaser.Scene {
 
     const n = calm ? 0.4 : 1;
     this.burstParticles(x, y, keys.scrap, Math.round((6 + radius / 4) * n), 260);
-    this.burstParticles(x, y, ink ? keys.inkdot : keys.crumb, Math.round((10 + radius / 3) * n), 320);
-    for (let i = 0; i < CHUNK_VARIANTS; i++)
-      this.burstParticles(x, y, keys.chunk(i), Math.round((2 + radius / 14) * n), 380);
+    const dot = ink ? keys.inkdot : glue ? keys.gluedot : neon ? keys.neondot : keys.crumb;
+    this.burstParticles(x, y, dot, Math.round((10 + radius / 3) * n), 320);
+    if (!glue) {
+      for (let i = 0; i < CHUNK_VARIANTS; i++)
+        this.burstParticles(x, y, keys.chunk(i), Math.round((2 + radius / 14) * n), 380);
+    }
     this.puff(x, y, scale);
     if (settings.get().screenShake && !calm)
       this.cameras.main.shake(140 + radius * 3, Math.min(0.012, radius / 4500));
-    audio.play(ink ? 'splat' : 'boom', radius / 34);
+    audio.play(ink ? 'splat' : glue ? 'goo' : neon ? 'zap' : 'boom', radius / 34);
+  }
+
+  /** Glue piling up into a mound. */
+  private glueSplash(x: number, y: number, radius: number): void {
+    const blob = this.add
+      .circle(x, y, radius, 0xf8f4ea, 0.95)
+      .setDepth(DEPTH.fx - 2)
+      .setScale(0.2);
+    this.tweens.add({ targets: blob, scale: 1.05, duration: 180, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: blob, alpha: 0, delay: 180, duration: 260, onComplete: () => blob.destroy() });
+    this.burstParticles(x, y, keys.gluedot, settings.get().reducedMotion ? 4 : 12, 180);
+    audio.play('goo', 1.2);
+  }
+
+  private neonFlash(x: number, y: number, r: number): void {
+    const c = this.add.circle(x, y, r, 0xf3ff9e, 0.9).setDepth(DEPTH.fx);
+    this.tweens.add({ targets: c, scale: 1.8, alpha: 0, duration: 260, onComplete: () => c.destroy() });
   }
 
   private burstParticles(x: number, y: number, key: string, count: number, speed: number): void {
+    if (count <= 0) return;
     const emitter = this.add.particles(x, y, key, {
       speed: { min: speed * 0.3, max: speed },
       angle: { min: 200, max: 340 },
@@ -1118,6 +1408,7 @@ export class BattleScene extends Phaser.Scene {
         color,
         stroke: '#fffdf6',
         strokeThickness: 6,
+        resolution: TEXT_RES,
       })
       .setOrigin(0.5)
       .setDepth(DEPTH.label + 1)

@@ -1,6 +1,6 @@
 // Offline support: serve cached files first, refresh them in the background.
 // Bump VERSION to drop old caches after a release.
-const VERSION = 'doodle-war-v1';
+const VERSION = 'doodle-war-v2';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

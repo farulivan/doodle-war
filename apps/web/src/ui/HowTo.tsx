@@ -1,5 +1,5 @@
 import { UNITS, UNIT_KINDS } from '@doodle/sim';
-import { unitIconUrl } from '../game/art/doodles';
+import { unitIconUrl } from '../game/art/portrait';
 
 export function HowTo({ onBack }: { onBack(): void }) {
   return (
@@ -7,8 +7,9 @@ export function HowTo({ onBack }: { onBack(): void }) {
       <div className="sheet howto ruled interactive">
         <h2>How to Play</h2>
         <p>
-          Two teams of doodles take turns lobbing things at each other across a notebook page. Explosions{' '}
-          <b>erase</b> the pencil ground. Wipe out the other team, or knock them <b>off the page</b>.
+          Two teams of doodles take turns firing at each other across a notebook page. Explosions <b>erase</b>{' '}
+          the ground. Wipe out the other team, or knock them <b>off the page</b>. Each of the six doodles
+          plays its own way: pick one that suits you.
         </p>
 
         <h3>Controls</h3>
@@ -57,8 +58,27 @@ export function HowTo({ onBack }: { onBack(): void }) {
         <h3>Wind &amp; the special meter</h3>
         <p>
           The fan at the top shows wind direction and strength. It changes every turn and pushes light shots
-          like Paper Darts the most. Your special meter fills as you deal and take damage. After turn 40 the{' '}
-          <b>Deadline</b> hits and all damage is multiplied by 1.5.
+          like Paper Darts the most; beams ignore it. Your special meter fills as you deal and take damage.
+          After turn 40 the <b>Deadline</b> hits and all damage is multiplied by 1.5.
+        </p>
+
+        <h3>Statuses</h3>
+        <ul>
+          <li>
+            <b>Inked</b> (Ink Squid): walks half as far next turn, and that turn comes later.
+          </li>
+          <li>
+            <b>Stuck</b> (Super Glue): can't walk or hop next turn.
+          </li>
+          <li>
+            <b>Highlighted</b> (Cap Toss): the next hit does 35% more.
+          </li>
+        </ul>
+
+        <h3>Fair pages</h3>
+        <p>
+          Every battlefield is a mirror image down the middle, and both teams start in mirrored spots. Remix
+          gives a new layout that is just as fair.
         </p>
 
         <h3>The doodles</h3>
@@ -68,9 +88,12 @@ export function HowTo({ onBack }: { onBack(): void }) {
             return (
               <div key={k} className="sheet">
                 <img src={unitIconUrl(k, i % 2)} alt="" />
-                <b>{u.name}</b>
+                <b>{u.name}</b> <span className="tag">{u.role}</span>
                 <div>{u.blurb}</div>
                 <div style={{ clear: 'both', fontSize: '0.88rem', color: 'var(--ink-soft)' }}>
+                  <div>
+                    <b>Passive, {u.passive.name}</b>: {u.passive.text}
+                  </div>
                   {u.weapons.map((w, j) => (
                     <div key={w.id}>
                       {j === 2 ? '★ ' : `${j + 1}. `}

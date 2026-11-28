@@ -6,7 +6,11 @@ import { audio } from './game/audio';
 import { controller } from './game/controller';
 import { App } from './ui/App';
 import { ErrorBoundary } from './ui/ErrorBoundary';
+import { Gallery } from './ui/Gallery';
 import './ui/styles.css';
+
+/** A development page with every doodle in every mood. */
+const gallery = import.meta.env.DEV && new URLSearchParams(location.search).has('gallery');
 
 // Browsers keep audio locked until the first gesture; unlock on whatever comes first.
 for (const type of ['pointerdown', 'keydown', 'touchstart'] as const) {
@@ -27,8 +31,6 @@ if (import.meta.env.DEV) {
 
 createRoot(document.getElementById('ui')!).render(
   <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <ErrorBoundary>{gallery ? <Gallery /> : <App />}</ErrorBoundary>
   </StrictMode>,
 );
